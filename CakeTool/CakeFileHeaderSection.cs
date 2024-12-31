@@ -1,3 +1,3 @@
 ﻿namespace CakeTool;
 
-public record CakeFileHeaderSection(uint Size, uint Hash, uint Offset);
+public record CakeFileHeaderSection(uint Size, uint Checksum, uint Offset);

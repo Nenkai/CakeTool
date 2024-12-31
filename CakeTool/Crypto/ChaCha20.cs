@@ -242,13 +242,13 @@ public sealed class ChaCha20 : IDisposable
         if (numBytes > 0)
         {
 #if NETCOREAPP3_0_OR_GREATER
-            if (Avx2.IsSupported)
+            if (Vector256.IsHardwareAccelerated)
             {
-                AVX2Xor(x, tmp, bytes, numBytes);
+                Xor256(x, tmp, bytes, numBytes);
             }
-            else if (Sse2.IsSupported)
+            else if (Vector128.IsHardwareAccelerated)
             {
-                SSE2Xor(x, tmp, bytes, numBytes);
+                Xor128(x, tmp, bytes, numBytes);
             }
             else
             {
@@ -261,7 +261,7 @@ public sealed class ChaCha20 : IDisposable
     }
 
 #if NETCOREAPP3_0_OR_GREATER
-    private void AVX2Xor(Span<uint> x, Span<byte> tmpState, Span<byte> inputBytes, int inputSize)
+    private void Xor256(Span<uint> x, Span<byte> tmpState, Span<byte> inputBytes, int inputSize)
     {
         Span<Vector256<byte>> tmpStateBlocks = MemoryMarshal.Cast<byte, Vector256<byte>>(tmpState);
         Span<Vector256<byte>> blocks = MemoryMarshal.Cast<byte, Vector256<byte>>(inputBytes);
@@ -273,8 +273,8 @@ public sealed class ChaCha20 : IDisposable
 
         while (rem >= 0x40)
         {
-            blocks[blockI] = Avx2.Xor(blocks[blockI], tmpStateBlocks[0]); blockI++;
-            blocks[blockI] = Avx2.Xor(blocks[blockI], tmpStateBlocks[1]); blockI++;
+            blocks[blockI] = Vector256.Xor(blocks[blockI], tmpStateBlocks[0]); blockI++;
+            blocks[blockI] = Vector256.Xor(blocks[blockI], tmpStateBlocks[1]); blockI++;
 
             Increment();
             Hash(x, tmpState);
@@ -291,7 +291,7 @@ public sealed class ChaCha20 : IDisposable
         }
     }
 
-    private void SSE2Xor(Span<uint> x, Span<byte> tmpState, Span<byte> inputBytes, int inputSize)
+    private void Xor128(Span<uint> x, Span<byte> tmpState, Span<byte> inputBytes, int inputSize)
     {
         Span<Vector128<byte>> tmpStateBlocks = MemoryMarshal.Cast<byte, Vector128<byte>>(tmpState);
         Span<Vector128<byte>> blocks = MemoryMarshal.Cast<byte, Vector128<byte>>(inputBytes);
@@ -303,10 +303,10 @@ public sealed class ChaCha20 : IDisposable
 
         while (rem >= 0x40)
         {
-            blocks[blockI] = Sse2.Xor(blocks[blockI], tmpStateBlocks[0]); blockI++;
-            blocks[blockI] = Sse2.Xor(blocks[blockI], tmpStateBlocks[1]); blockI++;
-            blocks[blockI] = Sse2.Xor(blocks[blockI], tmpStateBlocks[2]); blockI++;
-            blocks[blockI] = Sse2.Xor(blocks[blockI], tmpStateBlocks[3]); blockI++;
+            blocks[blockI] = Vector128.Xor(blocks[blockI], tmpStateBlocks[0]); blockI++;
+            blocks[blockI] = Vector128.Xor(blocks[blockI], tmpStateBlocks[1]); blockI++;
+            blocks[blockI] = Vector128.Xor(blocks[blockI], tmpStateBlocks[2]); blockI++;
+            blocks[blockI] = Vector128.Xor(blocks[blockI], tmpStateBlocks[3]); blockI++;
 
             Increment();
             Hash(x, tmpState);
