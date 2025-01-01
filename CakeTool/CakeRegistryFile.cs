@@ -181,38 +181,73 @@ public class CakeRegistryFile : IDisposable
 
             uint key = GetKeyForFile(CryptoKey, entry.CompressedSize, entry.DataOffset);
 
-            if (entry.FileTypeSignature == 0x21584554) // 'TEX!'
-            {
-                ;
-            }
+            using var inputBuffer = MemoryOwner<byte>.Allocate((int)entry.CompressedSize);
+            _fileStream.ReadExactly(inputBuffer.Span);
+            CryptFileData(inputBuffer.Span, entry.CompressedSize, key); // only the first 0x100 bytes are ever encrypted.
 
-            if (entry.DecompressedSize != 0)
+
+            if (entry.ResourceTypeSignature == 0x21584554) // 'TEX!'
             {
+                // TODO: Extract texture into dds. For now just extract the tex raw
+                // ProcessTexture(entry, inputBuffer.Span, outputPath);
+
                 using FileStream outputStream = File.Create(outputPath);
-
-                using var inputBuffer = MemoryOwner<byte>.Allocate((int)entry.CompressedSize);
-                using var outputBuffer = MemoryOwner<byte>.Allocate((int)entry.DecompressedSize);
-
-                _fileStream.ReadExactly(inputBuffer.Span);
-
-                CryptFileData(inputBuffer.Span, entry.CompressedSize, key); // only the first 0x100 bytes are ever encrypted.
-
-                long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), (int)entry.CompressedSize,
-                                                in MemoryMarshal.GetReference(outputBuffer.Span), entry.DecompressedSize);
-                if (decoded != entry.DecompressedSize)
-                    _logger?.LogError("ERROR: Failed to decompress oodle data ({file})", Path.Combine(dirName, fileName));
-                else
-                    outputStream.Write(outputBuffer.Span);
+                outputStream.Write(inputBuffer.Span);
             }
             else
             {
-                byte[] buffer = new byte[entry.CompressedSize];
-                _fileStream.ReadExactly(buffer);
+                using FileStream outputStream = File.Create(outputPath);
 
-                CryptFileData(buffer, entry.CompressedSize, key); // only the first 0x100 bytes are ever encrypted.
-                File.WriteAllBytes(outputPath, buffer);
+                if (entry.DecompressedSize != 0)
+                {
+                    using var outputBuffer = MemoryOwner<byte>.Allocate((int)entry.DecompressedSize);
+                    long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), (int)entry.CompressedSize,
+                                                    in MemoryMarshal.GetReference(outputBuffer.Span), entry.DecompressedSize);
+                    if (decoded != entry.DecompressedSize)
+                        _logger?.LogError("ERROR: Failed to decompress oodle data ({file}), skipping!", Path.Combine(dirName, fileName));
+                    else
+                        outputStream.Write(outputBuffer.Span);
+                }
+                else
+                {
+                    outputStream.Write(inputBuffer.Span);
+                }
             }
         }
+    }
+
+    private void ProcessTexture(CakeFileEntry fileEntry, Span<byte> data, string outputPath)
+    {
+        const int TextureResourceHeaderSize = 0x28;
+
+        SpanReader sr = new SpanReader(data);
+        ushort unk1 = sr.ReadUInt16(); // 1 byte Version? then unknown byte?
+        ushort width = sr.ReadUInt16();
+        ushort height = sr.ReadUInt16();
+        sr.ReadUInt16();
+        ulong unkHash1 = sr.ReadUInt64();
+        ulong empty = sr.ReadUInt64();
+        uint decompressedSize = sr.ReadUInt32();
+        uint unk = sr.ReadUInt32();
+
+        // Not sure which is the pixel format.
+
+        // 4 = BC5/DXT5
+        // 6 = BC7
+        byte unkByte = sr.ReadByte();
+
+        byte numMips = sr.ReadByte();
+        sr.ReadInt16();
+
+        // 4 = BC5/DXT5
+        // 6 = BC7
+        uint formatMaybe2 = sr.ReadUInt32();
+
+        using FileStream outputStream = File.Create(outputPath);
+        using var outputBuffer = MemoryOwner<byte>.Allocate((int)decompressedSize);
+
+        long pixelData = Oodle.Decompress(in MemoryMarshal.GetReference(data.Slice(TextureResourceHeaderSize)), data.Length - TextureResourceHeaderSize,
+                                          in MemoryMarshal.GetReference(outputBuffer.Span), decompressedSize);
     }
 
     // UI/Projects/ShowAssets/superstar_nameplates

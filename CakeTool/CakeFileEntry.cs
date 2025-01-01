@@ -13,7 +13,7 @@ public class CakeFileEntry
     public uint StringOffset;
     public uint ParentDirIndex;
     public uint CompressedSize;
-    public uint FileTypeSignature;
+    public uint ResourceTypeSignature;
     public ulong DataOffset;
     public uint DecompressedSize;
     public ushort NumChunks; // 0x1C
@@ -45,7 +45,7 @@ public class CakeFileEntry
         StringOffset = sr.ReadUInt32();
         ParentDirIndex = sr.ReadUInt32();
         CompressedSize = sr.ReadUInt32();
-        FileTypeSignature = sr.ReadUInt32();
+        ResourceTypeSignature = sr.ReadUInt32();
         DataOffset = sr.ReadUInt64();
         DecompressedSize = sr.ReadUInt32();
         NumChunks = sr.ReadUInt16();
