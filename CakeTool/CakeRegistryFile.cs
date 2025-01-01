@@ -181,8 +181,10 @@ public class CakeRegistryFile : IDisposable
 
             uint key = GetKeyForFile(CryptoKey, entry.CompressedSize, entry.DataOffset);
 
-            if (entry.FileTypeSignature == 0x21584554)
-                return;
+            if (entry.FileTypeSignature == 0x21584554) // 'TEX!'
+            {
+                ;
+            }
 
             if (entry.DecompressedSize != 0)
             {

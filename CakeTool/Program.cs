@@ -53,8 +53,10 @@ public class Program
             using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory);
 
             _logger.LogInformation("Starting unpack process.");
-            cake.ExtractAll(verbs.OutputPath);
-            _logger.LogInformation("Done.");
+            if (cake.ExtractFile(verbs.FileToUnpack, verbs.OutputPath))
+                _logger.LogInformation("File extracted successfully.");
+            else
+                _logger.LogInformation("File was not found in cake archive.");
         }
         catch (Exception ex)
         {
@@ -79,10 +81,10 @@ public class Program
         try
         {
             using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory);
-            if (cake.ExtractFile(verbs.InputFile, verbs.OutputPath))
-                _logger.LogInformation("File extracted successfully.");
-            else
-                _logger.LogInformation("File was not found in cake archive.");
+            _logger.LogInformation("Starting unpack process.");
+            cake.ExtractAll(verbs.OutputPath);
+            _logger.LogInformation("Done.");
+
         }
         catch (Exception ex)
         {
