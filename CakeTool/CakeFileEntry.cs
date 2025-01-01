@@ -26,16 +26,16 @@ public class CakeFileEntry
         set => RawBitFlags |= (byte)(value & 0b11111111);
     }
 
-    public byte UnkBits2 // Compression type?
+    public byte UnkBits2
     {
         get => (byte)((RawBitFlags >> 8) & 0b11111111);
         set => RawBitFlags |= (byte)((value & 0b11111111) << 8);
     }
 
-    public CakeFileFlags UnkFlags3
+    public ushort UnkFlags3
     {
-        get => (CakeFileFlags)((RawBitFlags >> 16) & 0b11_1111_1111_1111);
-        set => RawBitFlags |= (byte)(((ushort)value & 0b11_1111_1111_1111) << 16);
+        get => (ushort)((RawBitFlags >> 16) & 0b11_1111_1111_1111);
+        set => RawBitFlags |= (byte)((value & 0b11_1111_1111_1111) << 16);
     }
 
     public List<uint> ChunkSizes = [];
@@ -53,11 +53,5 @@ public class CakeFileEntry
 
         for (int i = 0; i < NumChunks; i++)
             ChunkSizes.Add(sr.ReadUInt32());
-    }
-
-    [Flags]
-    public enum CakeFileFlags : ushort
-    {
-        Encrypted = 1 << 10
     }
 }

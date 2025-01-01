@@ -51,6 +51,11 @@ public class Program
         try
         {
             using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory);
+            if (cake.TypeOrParam == CakeRegistryType.External)
+            {
+                _logger.LogWarning("Cake is marked as external, there are no files to unpack. Files listed above are present outside the cake archive.");
+                return;
+            }
 
             _logger.LogInformation("Starting unpack process.");
             if (cake.ExtractFile(verbs.FileToUnpack, verbs.OutputPath))
@@ -81,6 +86,12 @@ public class Program
         try
         {
             using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory);
+            if (cake.TypeOrParam == CakeRegistryType.External)
+            {
+                _logger.LogWarning("Cake is marked as external, there are no files to unpack. Files listed above are present outside the cake archive.");
+                return;
+            }
+
             _logger.LogInformation("Starting unpack process.");
             cake.ExtractAll(verbs.OutputPath);
             _logger.LogInformation("Done.");

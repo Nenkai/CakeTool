@@ -19,7 +19,6 @@ using Syroot.BinaryData.Memory;
 using System.Buffers;
 using CommunityToolkit.HighPerformance.Buffers;
 using Microsoft.Extensions.Logging;
-using System.Reflection.Metadata.Ecma335;
 
 namespace CakeTool;
 
@@ -47,10 +46,10 @@ public class CakeRegistryFile : IDisposable
     public byte VersionMajor { get; set; }
     public byte VersionMinor { get; set; }
 
-    public byte TypeIndex { get; set; }
+    public CakeRegistryType TypeOrParam { get; set; }
 
     /// <summary>
-    /// Whether the cake is encrypted.
+    /// Whether the cake is encrypted, at least the header and toc.
     /// </summary>
     public bool IsEncrypted { get; set; }
 
@@ -121,7 +120,6 @@ public class CakeRegistryFile : IDisposable
             throw new InvalidDataException("Not a valid cake file, signature did not match.");
 
         ushort version = hdrReader.ReadUInt16();
-        uint bitFlags = hdrReader.ReadUInt16();
         VersionMajor = (byte)(version & 0xFF);
         VersionMinor = (byte)(version >> 8);
 
@@ -131,9 +129,12 @@ public class CakeRegistryFile : IDisposable
             throw new NotSupportedException("Only cakes version 9 are currently supported.");
 
         // 8 bits
+        uint bitFlags = hdrReader.ReadUInt16();
         byte unk = (byte)(bitFlags & 0b11111111);
-        TypeIndex = (byte)((bitFlags >> 8) & 0b111111); // 7 bits - encryption type?
+        TypeOrParam = (CakeRegistryType)((bitFlags >> 8) & 0b111111);
         IsEncrypted = (bitFlags >> 15) == 1; // 1 bit
+
+        _logger?.LogInformation("Type: {type} ({typeNumber})", TypeOrParam, (int)TypeOrParam);
 
         CryptoKey = GenerateCryptoXorKey();
         _logger?.LogInformation("Crypto Key: {key:X8}", CryptoKey);
@@ -142,6 +143,20 @@ public class CakeRegistryFile : IDisposable
             CryptCRCData(headerBytes.AsSpan(0x08, 0x54));
 
         ReadSections(bs, hdrReader);
+
+        if (TypeOrParam == CakeRegistryType.External)
+        {
+            _logger?.LogInformation("External Entries ({count}):", _fileEntries.Count);
+            foreach (CakeFileEntry? fileEntry in _fileEntries)
+            {
+                var name = _strings[fileEntry.StringOffset];
+
+                CakeDirEntry parentDir = _dirEntries[(int)fileEntry.ParentDirIndex];
+                string dirName = _strings[parentDir.PathStringOffset];
+
+                _logger?.LogInformation("- {file}", Path.Combine(dirName, name));
+            }
+        }
     }
 
     public void ExtractAll(string outputDir)
@@ -186,8 +201,9 @@ public class CakeRegistryFile : IDisposable
 
             using var inputBuffer = MemoryOwner<byte>.Allocate((int)entry.CompressedSize);
             _fileStream.ReadExactly(inputBuffer.Span);
-            CryptFileData(inputBuffer.Span, entry.CompressedSize, key); // only the first 0x100 bytes are ever encrypted.
 
+            if (entry.UnkBits2 == 1)
+                CryptFileData(inputBuffer.Span, entry.CompressedSize, key); // only the first 0x100 bytes are ever encrypted.
 
             if (entry.ResourceTypeSignature == 0x21584554) // 'TEX!'
             {
@@ -315,6 +331,7 @@ public class CakeRegistryFile : IDisposable
         Debug.Assert(bs.Position == totalTocSize);
 
         _logger?.LogInformation("Done reading sections.");
+
     }
 
     private void ReadFileLookupTable(BinaryStream bs, uint numFiles)
@@ -770,4 +787,21 @@ public class CakeRegistryFile : IDisposable
         _chaCha20Ctx?.Dispose();
         GC.SuppressFinalize(this);
     }
+}
+
+public enum CakeRegistryType : byte
+{
+    Unk1 = 1,
+    Unk2 = 2,
+    Unk3 = 3,
+    
+    /// <summary>
+    /// rs.cak
+    /// </summary>
+    RSPatch = 4,
+
+    /// <summary>
+    /// For tiny packs, refering to files outside the cake
+    /// </summary>
+    External = 5,
 }
