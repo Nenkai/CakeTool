@@ -127,6 +127,9 @@ public class CakeRegistryFile : IDisposable
 
         _logger?.LogInformation("Cake Version: v{major}.{minor}", VersionMajor, VersionMinor);
 
+        if (VersionMajor != 9)
+            throw new NotSupportedException("Only cakes version 9 are currently supported.");
+
         // 8 bits
         byte unk = (byte)(bitFlags & 0b11111111);
         TypeIndex = (byte)((bitFlags >> 8) & 0b111111); // 7 bits - encryption type?
@@ -421,9 +424,6 @@ public class CakeRegistryFile : IDisposable
 
     private uint GenerateCryptoXorKey()
     {
-        if (!FileName.StartsWith("bakedfile") && !FileName.StartsWith("rs"))
-            throw new InvalidOperationException("File name should start with bakedfile or rs (never rename the cake files!)");
-
         if (VersionMajor == 9 && VersionMinor == 2)
             return GenerateCryptoKeyV9_2();
         else if (VersionMajor == 9 && VersionMinor == 1)
@@ -470,26 +470,53 @@ public class CakeRegistryFile : IDisposable
     static ulong ExtractU8_U64(ulong val, int byteIndex)
         => (val >> (8 * byteIndex));
 
-    public static uint GetKeyForFile(uint baseKey, uint size, ulong offset)
+    public uint GetKeyForFile(uint baseKey, uint size, ulong offset)
     {
-        // Signedness matters
         ulong base_ = 0xCBF29CE484222325;
-        for (int i = 0; i < 4; i++)
-            base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~size, i) ^ (long)base_);
 
-        for (int i = 0; i < 4; i++)
-            base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(size, i) ^ (long)base_);
+        // Signedness matters
+        if (VersionMajor == 9)
+        {
+            if (VersionMinor == 1)
+            {
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(baseKey, i) ^ (long)base_);
 
-        for (int i = 0; i < 4; i++)
-            base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~baseKey, i) ^ (long)base_);
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~baseKey, i) ^ (long)base_);
 
-        for (int i = 0; i < 4; i++)
-            base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(baseKey, i) ^ (long)base_);
+                for (int i = 0; i < 8; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U64(offset, i) ^ (long)base_);
 
-        for (int i = 0; i < 8; i++)
-            base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U64(~offset, i) ^ (long)base_);
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(size, i) ^ (long)base_);
 
-        return (uint)((base_ & 0xFFFFFFFF) ^ ~(base_ >> 32));
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~size, i) ^ (long)base_);
+                return (uint)((base_ & 0xFFFFFFFF) ^ (base_ >> 32));
+            }
+            else if (VersionMinor == 2)
+            {
+                // The order was changed a bit.
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~size, i) ^ (long)base_);
+
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(size, i) ^ (long)base_);
+
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~baseKey, i) ^ (long)base_);
+
+                for (int i = 0; i < 4; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(baseKey, i) ^ (long)base_);
+
+                for (int i = 0; i < 8; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U64(~offset, i) ^ (long)base_);
+                return (uint)((base_ & 0xFFFFFFFF) ^ ~(base_ >> 32));
+            }
+        }
+
+        throw new NotSupportedException();
     }
 
     static void CryptFileData(Span<byte> data, long fileSize, uint key)
