@@ -10,3 +10,11 @@ Tool/decryption tool for .cak archives (WIP).
 * v9.2
 
 This repo is only provided for reference/documentation.
+
+## Building
+
+.NET 9.0 and Visual Studio 2022.
+
+## License
+
+MIT License.
