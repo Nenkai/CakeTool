@@ -10,12 +10,18 @@ using Syroot.BinaryData.Memory;
 
 public class CakeFileEntry
 {
-    public uint StringOffset;
-    public uint ParentDirIndex;
-    public uint CompressedSize;
-    public uint ResourceTypeSignature;
-    public ulong DataOffset;
-    public uint DecompressedSize;
+    public uint StringOffset { get; set; }
+    public uint ParentDirIndex { get; set; }
+    public uint CompressedSize { get; set; }
+    public uint ResourceTypeSignature { get; set; }
+    public ulong DataOffset { get; set; }
+    public uint DecompressedSize { get; set; }
+
+    /// <summary>
+    /// V6 only?
+    /// </summary>
+    public uint CRCChecksum { get; set; }
+
     public ushort NumChunks; // 0x1C
     // 8-8-14-2? bits - 2 upper bits may be unused
     public uint RawBitFlags; // 0x1E
@@ -40,18 +46,31 @@ public class CakeFileEntry
 
     public List<uint> ChunkSizes = [];
 
-    public void Read(ref SpanReader sr)
+    public void Read(ref SpanReader sr, byte versionMajor, byte versionMinor)
     {
-        StringOffset = sr.ReadUInt32();
-        ParentDirIndex = sr.ReadUInt32();
-        CompressedSize = sr.ReadUInt32();
-        ResourceTypeSignature = sr.ReadUInt32();
-        DataOffset = sr.ReadUInt64();
-        DecompressedSize = sr.ReadUInt32();
-        NumChunks = sr.ReadUInt16();
-        RawBitFlags = sr.ReadUInt32();
+        if (versionMajor == 6)
+        {
+            // 0x1C
+            StringOffset = sr.ReadUInt32();
+            ParentDirIndex = sr.ReadUInt32();
+            CRCChecksum = sr.ReadUInt32();
+            CompressedSize = sr.ReadUInt32();
+            DataOffset = sr.ReadUInt64();
+            ResourceTypeSignature = sr.ReadUInt32();
+        }
+        else
+        {
+            StringOffset = sr.ReadUInt32();
+            ParentDirIndex = sr.ReadUInt32();
+            CompressedSize = sr.ReadUInt32();
+            ResourceTypeSignature = sr.ReadUInt32();
+            DataOffset = sr.ReadUInt64();
+            DecompressedSize = sr.ReadUInt32();
+            NumChunks = sr.ReadUInt16();
+            RawBitFlags = sr.ReadUInt32();
 
-        for (int i = 0; i < NumChunks; i++)
-            ChunkSizes.Add(sr.ReadUInt32());
+            for (int i = 0; i < NumChunks; i++)
+                ChunkSizes.Add(sr.ReadUInt32());
+        }
     }
 }

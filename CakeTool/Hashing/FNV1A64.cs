@@ -21,7 +21,7 @@ public class FNV1A64
 
         for (var i = 0; i < path.Length; i++)
         {
-            hash = hash ^ char.ToLower(path[i]);
+            hash ^= char.ToLower(path[i]);
             hash *= fnv64Prime;
         }
 
