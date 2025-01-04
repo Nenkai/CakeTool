@@ -120,6 +120,53 @@ public class CakeRegistryFile : IDisposable
         return cake;
     }
 
+    // UI/Projects/ShowAssets/superstar_nameplates
+    public CakeDirInfo? GetDirEntry(string dir)
+    {
+        ulong hash = FNV1A64.FNV64StringI(dir);
+        if (_dirLookupTable.TryGetValue(hash, out CakeEntryLookup? dirLookupEntry))
+        {
+            return _dirEntries[(int)dirLookupEntry.EntryIndex];
+        }
+
+        return null;
+    }
+
+    public CakeFileEntry? GetFileEntry(string file, out bool isEmpty)
+    {
+        isEmpty = true;
+
+        ulong hash = FNV1A64.FNV64StringI(file);
+        if (_fileLookupTable.TryGetValue(hash, out CakeEntryLookup? fileLookupEntry))
+        {
+            isEmpty = fileLookupEntry.IsEmptyFile;
+            return _fileEntries[(int)fileLookupEntry.EntryIndex];
+        }
+
+        return null;
+    }
+
+    public void ExtractAll(string outputDir)
+    {
+        foreach (CakeFileEntry? fileEntry in _fileEntries)
+        {
+            var name = _strings[fileEntry.StringOffset];
+            ExtractEntry(fileEntry, name, outputDir);
+        }
+    }
+
+    public bool ExtractFile(string file, string outputDir)
+    {
+        ulong hash = FNV1A64.FNV64StringI(file);
+        if (!_fileLookupTable.TryGetValue(hash, out CakeEntryLookup? lookupEntry))
+            return false;
+
+        CakeFileEntry fileEntry = _fileEntries[(int)lookupEntry.EntryIndex];
+        ExtractEntry(fileEntry, file, outputDir);
+        return true;
+    }
+
+
     private void OpenInternal()
     {
         BinaryStream bs = new BinaryStream(_fileStream);
@@ -187,26 +234,6 @@ public class CakeRegistryFile : IDisposable
         }
     }
 
-    public void ExtractAll(string outputDir)
-    {
-        foreach (CakeFileEntry? fileEntry in _fileEntries)
-        {
-            var name = _strings[fileEntry.StringOffset];
-            ExtractEntry(fileEntry, name, outputDir);
-        }
-    }
-
-    public bool ExtractFile(string file, string outputDir)
-    {
-        ulong hash = FNV1A64.FNV64StringI(file);
-        if (!_fileLookupTable.TryGetValue(hash, out CakeEntryLookup? lookupEntry))
-            return false;
-
-        CakeFileEntry fileEntry = _fileEntries[(int)lookupEntry.EntryIndex];
-        ExtractEntry(fileEntry, file, outputDir);
-        return true;
-    }
-
     private void ExtractEntry(CakeFileEntry entry, string fileName, string outputDir)
     {
         string gamePath;
@@ -221,7 +248,7 @@ public class CakeRegistryFile : IDisposable
 
         string outputPath = Path.Combine(outputDir, gamePath);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
         _logger?.LogInformation("Extracting: {file}", gamePath);
 
@@ -241,7 +268,7 @@ public class CakeRegistryFile : IDisposable
                 (VersionMajor >= 9 && (entry.UnkBits2 & 1) == 1))
             {
                 uint key = GetFileManglingKey(entry);
-                CryptFileData(inputBuffer.Span, entry, key);
+                CryptFileDataAndCheck(inputBuffer.Span, entry, key);
             }
 
             if (entry.CompressedSize >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(inputBuffer.Span) == 0x21534552) // 'RES!' aka resource
@@ -353,32 +380,6 @@ public class CakeRegistryFile : IDisposable
 
         long pixelData = Oodle.Decompress(in MemoryMarshal.GetReference(data.Slice(TextureResourceHeaderSize)), data.Length - TextureResourceHeaderSize,
                                           in MemoryMarshal.GetReference(outputBuffer.Span), decompressedSize);
-    }
-
-    // UI/Projects/ShowAssets/superstar_nameplates
-    public CakeDirInfo? GetDirEntry(string dir)
-    {
-        ulong hash = FNV1A64.FNV64StringI(dir);
-        if (_dirLookupTable.TryGetValue(hash, out CakeEntryLookup? dirLookupEntry))
-        {
-            return _dirEntries[(int)dirLookupEntry.EntryIndex];
-        }
-
-        return null;
-    }
-
-    public CakeFileEntry? GetFileEntry(string file, out bool isEmpty)
-    {
-        isEmpty = true;
-
-        ulong hash = FNV1A64.FNV64StringI(file);
-        if (_fileLookupTable.TryGetValue(hash, out CakeEntryLookup? fileLookupEntry))
-        {
-            isEmpty = fileLookupEntry.IsEmptyFile;
-            return _fileEntries[(int)fileLookupEntry.EntryIndex];
-        }
-
-        return null;
     }
 
     #region Private
@@ -538,8 +539,10 @@ public class CakeRegistryFile : IDisposable
             else if ((VersionMajor == 8 && VersionMinor == 1) || (VersionMajor == 6 && VersionMinor == 8)) // 6.8 or 8.1 (? not sure for 8.1)
                 return GenerateCryptoKeyV6_8();
         }
-        else if (VersionMajor == 8 && VersionMinor == 2)
+        else if (VersionMajor == 8 && VersionMinor == 2) // 8.2
             return GenerateCryptoKeyV8_2();
+        else if (VersionMajor == 8 && VersionMinor == 3) // 8.3
+            return GenerateCryptoKeyV8_3();
         else if (VersionMajor == 9 && VersionMinor == 1) // 9.1
             return GenerateCryptoKeyV9_1();
         else if (VersionMajor == 9 && VersionMinor == 2) // 9.2
@@ -578,18 +581,35 @@ public class CakeRegistryFile : IDisposable
 
     private string ReadScrambledString(ref SpanReader sr)
     {
-        int key;
-
+        uint key;
         if (VersionMajor == 8 && VersionMinor == 2)
-            key = BinaryPrimitives.ReverseEndianness(sr.Position);
+            key = (uint)BinaryPrimitives.ReverseEndianness(sr.Position);
         else
-            key = sr.Position;
+            key = (uint)sr.Position;
 
         byte strLen = sr.ReadByte();
         byte[] bytes = sr.ReadBytes(strLen + 1);
-        ScrambleBytes(bytes, (uint)key);
+
+        if (VersionMajor == 8 && VersionMinor == 3)
+        {
+            RotateCrypt(bytes, key);
+        }
+        else
+        {
+            ScrambleBytes(bytes, key);
+        }
 
         return Encoding.ASCII.GetString(bytes.AsSpan(0, bytes.Length - 1));
+    }
+
+    private static void RotateCrypt(Span<byte> bytes, uint key)
+    {
+        byte[] keyBytes = BitConverter.GetBytes(key);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            byte rotated = byte.RotateRight(bytes[i], (i - 1) ^ 5);
+            bytes[i] = byte.RotateLeft((byte)(rotated ^ (i + keyBytes[((byte)i + 1) % 4] - 1)), i + 1);
+        }
     }
 
     static uint ExtractU8_U32(uint val, int byteIndex)
@@ -602,7 +622,7 @@ public class CakeRegistryFile : IDisposable
     {
         for (int i = 0; i < data.Length; i++)
         {
-            int byteOffset = ((int)key >> (8 * (i % 4)));
+            int byteOffset = (int)ExtractU8_U32(key, i);
             data[i] ^= (byte)(i + byteOffset);
         }
     }
@@ -619,9 +639,24 @@ public class CakeRegistryFile : IDisposable
             else if (VersionMinor == 8)
                 return entry.CompressedSize ^ MainCryptoKey;
         }
-        else if (VersionMajor == 8 && VersionMinor == 2)
+        else if (VersionMajor == 8)
         {
-            return BinaryPrimitives.ReverseEndianness(entry.CRCChecksum);
+            if (VersionMinor == 2)
+            {
+                return BinaryPrimitives.ReverseEndianness(entry.CRCChecksum);
+            }
+            else if (VersionMinor == 3)
+            {
+                Span<byte> toHash = new byte[3 * sizeof(ulong)];
+                BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x00..], MainCryptoKey);
+                BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x08..], entry.CompressedSize);
+                BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x10..], entry.DataOffset);
+
+                for (int i = 0; i < 0x18; i++)
+                    base_ = 0x100000001B3L * (ulong)((sbyte)toHash[i] ^ (long)base_);
+
+                return (uint)((base_ & 0xFFFFFFFF) ^ (base_ >> 32));
+            }
         }
         else if (VersionMajor == 9)
         {
@@ -661,14 +696,14 @@ public class CakeRegistryFile : IDisposable
 
                 for (int i = 0; i < 8; i++)
                     base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U64(~entry.DataOffset, i) ^ (long)base_);
-                return (uint)((base_ & 0xFFFFFFFF) ^ ~(base_ >> 32));
+                return (uint)((base_ & 0xFFFFFFFF) ^ ~(base_ >> 32)); // flip bits of higher 32
             }
         }
 
         throw new NotSupportedException();
     }
 
-    private void CryptFileData(Span<byte> data, CakeFileEntry fileEntry, uint key)
+    private void CryptFileDataAndCheck(Span<byte> data, CakeFileEntry fileEntry, uint key)
     {
         if (VersionMajor == 6)
         {
@@ -682,7 +717,19 @@ public class CakeRegistryFile : IDisposable
             {
                 ScrambleBytes(data, key);
                 if (CRC32C.Hash(data) != fileEntry.CRCChecksum)
-                    throw new Exception("V8 File decryption checksum failed.");
+                    throw new Exception("V8.2 File decryption checksum failed.");
+            }
+            else if (VersionMinor == 3)
+            {
+                for (int i = 0; i < data.Length; i++)
+                {
+                    byte val = byte.RotateRight(data[i], (i - 1) % 8 ^ 0xD);
+                    val = byte.RotateLeft((byte)(val ^ (i - 1 + ExtractU8_U32(key, (i + 1) % 4))), (i + 1) % 8);
+                    data[i] = val;
+                }
+
+                if (CRC32C.Hash(data) != fileEntry.CRCChecksum)
+                    throw new Exception("V8.3 File decryption checksum failed.");
             }
         }
         else if (VersionMajor >= 9)
@@ -699,11 +746,18 @@ public class CakeRegistryFile : IDisposable
 
     private uint CryptHeaderData(Span<byte> data, uint key)
     {
-        if (VersionMajor == 8 && VersionMinor == 2)
+        if (VersionMajor == 8)
         {
-            byte[] bytes = BitConverter.GetBytes(BinaryPrimitives.ReverseEndianness(key));
-            for (int i = 0; i < data.Length; i++)
-                data[i] ^= (byte)((byte)i + bytes[i % 4]);
+            if (VersionMinor == 2)
+            {
+                byte[] bytes = BitConverter.GetBytes(BinaryPrimitives.ReverseEndianness(key));
+                for (int i = 0; i < data.Length; i++)
+                    data[i] ^= (byte)((byte)i + bytes[i % 4]);
+            }
+            else if (VersionMinor == 3)
+            {
+                RotateCrypt(data, key);
+            }
 
             return CRC32C.Hash(data);
         }
@@ -789,6 +843,41 @@ public class CakeRegistryFile : IDisposable
 
         Span<uint> hashInts = MemoryMarshal.Cast<byte, uint>(metroHash);
         uint key = hashInts[0] ^ hashInts[1] ^ hashInts[2] ^ hashInts[3];
+        return key;
+    }
+
+    private uint GenerateCryptoKeyV8_3()
+    {
+        string nameSeed = $"{FileName.ToLower()}{VersionMajor:D2}{VersionMinor:D2}";
+        Memory<byte> table = CreateInitialKeyTableFromNameSeed(nameSeed, 0x40);
+        ChaChaTweakKeyTable(table.Slice(0, 0x3F));
+
+        // Alter table by putting a metrohash in it
+        byte[] metroHash = new byte[0x10];
+        MetroHash.MetroHashUnkCustomV9_1(table.Span.Slice(0, 0x3F), 0x3F, 0, metroHash);
+
+        Span<uint> tableInts = MemoryMarshal.Cast<byte, uint>(table.Span);
+        Span<uint> hashInts = MemoryMarshal.Cast<byte, uint>(metroHash);
+        uint seed = hashInts[0] ^ hashInts[1] ^ hashInts[2] ^ hashInts[3];
+        for (int i = 0; i < 14; i++)
+        {
+            tableInts[i] ^= seed;
+            seed = tableInts[i];
+        }
+
+        seed = table.Span[52];
+        for (int i = 56; i < 63; i++)
+        {
+            table.Span[i] ^= (byte)seed;
+            seed = table.Span[i];
+        }
+
+        byte[] metroHash2 = new byte[0x10];
+        MetroHash.MetroHashUnkCustomV9_1(table.Span.Slice(0, 0x3F), 0x3F, 0, metroHash2);
+
+        Span<uint> hashInts2 = MemoryMarshal.Cast<byte, uint>(metroHash2);
+        uint key = hashInts2[0] ^ hashInts2[1] ^ hashInts2[2] ^ hashInts2[3];
+
         return key;
     }
 
@@ -878,7 +967,7 @@ public class CakeRegistryFile : IDisposable
 
             // Not really used
             int byteIndex = (i + 1) % 4;
-            byte piece = (byte)(mask + (byte)(finalSeed >> (8 * byteIndex)));
+            byte piece = (byte)(mask + (byte)ExtractU8_U32(finalSeed, byteIndex));
             byte rotated = byte.RotateRight(data, i + 1);
             keyOne.Span[i] = byte.RotateLeft((byte)(piece ^ rotated), mask ^ 5);
 
@@ -900,10 +989,10 @@ public class CakeRegistryFile : IDisposable
             int j = 0;
             for (int i = 0; i < 0x3F + 1; i++)
             {
-                if (j == FileName.Length)
+                if (j == nameSeed.Length)
                     j = 0;
 
-                k[i] = (byte)FileName[j++];
+                k[i] = (byte)nameSeed[j++];
             }
             k[0x3F] = 0; // Null termination, not needed, but that's what happens
         }

@@ -167,7 +167,7 @@ public class MetroHash
     }
 
     // This one has different constants, it is based on crc_1 variant
-    public static void MetroHashUnkCustomV9_1(Span<byte> key, uint len, uint seed, byte[] outHash)
+    public static void MetroHashUnkCustomV9_1(Span<byte> key, uint len, uint seed, Span<byte> outHash)
     {
         // Some weird metrohash variant, the constants are unknown.
         Span<ulong> ulongs = MemoryMarshal.Cast<byte, ulong>(key);
