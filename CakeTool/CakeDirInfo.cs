@@ -8,7 +8,7 @@ namespace CakeTool;
 
 using Syroot.BinaryData.Memory;
 
-public class CakeDirEntry
+public class CakeDirInfo
 {
     /// <summary>
     /// FNV1A64

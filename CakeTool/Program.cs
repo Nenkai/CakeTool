@@ -29,9 +29,10 @@ public class Program
         Console.WriteLine("-----------------------------------------");
         Console.WriteLine("");
 
-        var p = Parser.Default.ParseArguments<UnpackCakeVerbs, UnpackFileVerbs>(args)
+        var p = Parser.Default.ParseArguments<UnpackCakeVerbs, UnpackFileVerbs, MpbToTxtVerbs>(args)
             .WithParsed<UnpackCakeVerbs>(UnpackCake)
-            .WithParsed<UnpackFileVerbs>(UnpackFile);
+            .WithParsed<UnpackFileVerbs>(UnpackFile)
+            .WithParsed<MpbToTxtVerbs>(MpbToTxt);
     }
 
     static void UnpackFile(UnpackFileVerbs verbs)
@@ -50,7 +51,7 @@ public class Program
 
         try
         {
-            using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory);
+            using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory, verbs.ForceNoEncryption);
             if (cake.TypeOrParam == CakeRegistryType.External)
             {
                 _logger.LogWarning("Cake is marked as external, there are no files to unpack. Files listed above are present outside the cake archive.");
@@ -85,7 +86,7 @@ public class Program
 
         try
         {
-            using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory);
+            using var cake = CakeRegistryFile.Open(verbs.InputFile, _loggerFactory, verbs.ForceNoEncryption);
             if (cake.TypeOrParam == CakeRegistryType.External)
             {
                 _logger.LogWarning("Cake is marked as external, there are no files to unpack. Files listed above are present outside the cake archive.");
@@ -95,6 +96,26 @@ public class Program
             _logger.LogInformation("Starting unpack process.");
             cake.ExtractAll(verbs.OutputPath);
             _logger.LogInformation("Done.");
+
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "Failed to unpack.");
+        }
+    }
+
+    static void MpbToTxt(MpbToTxtVerbs verbs)
+    {
+        if (!File.Exists(verbs.InputFile))
+        {
+            _logger.LogError("File '{path}' does not exist", verbs.InputFile);
+            return;
+        }
+
+        try
+        {
+            var mapFile = MapBinary.Open(verbs.InputFile);
+            mapFile.WriteList(Path.ChangeExtension(verbs.InputFile, ".txt"));
 
         }
         catch (Exception ex)
@@ -115,6 +136,9 @@ public class UnpackFileVerbs
 
     [Option('o', "output", HelpText = "Optional. Output directory.")]
     public string OutputPath { get; set; }
+
+    [Option("force-no-encryption", HelpText = "Forces no encryption use. Use this for 2K21 Beta where archives are not encrypted (but no flag is specified to determine it).")]
+    public bool ForceNoEncryption { get; set; } = false;
 }
 
 [Verb("unpack-cak", HelpText = "Unpacks all files from a cake (.cak) archive.")]
@@ -125,4 +149,14 @@ public class UnpackCakeVerbs
 
     [Option('o', "output", HelpText = "Output directory. Optional, defaults to a folder named the same as the cake (.cak) file.")]
     public string OutputPath { get; set; }
+
+    [Option("force-no-encryption", HelpText = "Forces no encryption use. Use this for 2K21 Beta where archives are not encrypted (but no flag is specified to determine it).")]
+    public bool ForceNoEncryption { get; set; } = false;
+}
+
+[Verb("mpb-to-txt", HelpText = "Mpb symbol map to text")]
+public class MpbToTxtVerbs
+{
+    [Option('i', "input", Required = true, HelpText = "Input .mpb file")]
+    public string InputFile { get; set; }
 }

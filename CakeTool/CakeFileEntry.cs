@@ -8,6 +8,7 @@ namespace CakeTool;
 
 using Syroot.BinaryData.Memory;
 
+// SysCore::FileEntry
 public class CakeFileEntry
 {
     public uint StringOffset { get; set; }
@@ -15,7 +16,7 @@ public class CakeFileEntry
     public uint CompressedSize { get; set; }
     public uint ResourceTypeSignature { get; set; }
     public ulong DataOffset { get; set; }
-    public uint DecompressedSize { get; set; }
+    public uint ExpandedSize { get; set; }
 
     /// <summary>
     /// V6 only?
@@ -48,7 +49,32 @@ public class CakeFileEntry
 
     public void Read(ref SpanReader sr, byte versionMajor, byte versionMinor)
     {
-        if (versionMajor == 6)
+        if (versionMajor >= 9)
+        {
+            StringOffset = sr.ReadUInt32();
+            ParentDirIndex = sr.ReadUInt32();
+            CompressedSize = sr.ReadUInt32();
+            ResourceTypeSignature = sr.ReadUInt32();
+            DataOffset = sr.ReadUInt64();
+            ExpandedSize = sr.ReadUInt32();
+            NumChunks = sr.ReadUInt16();
+            RawBitFlags = sr.ReadUInt32();
+
+            for (int i = 0; i < NumChunks; i++)
+                ChunkSizes.Add(sr.ReadUInt32());
+        }
+        else if (versionMajor >= 8)
+        {
+            // 0x20
+            StringOffset = sr.ReadUInt32();
+            ParentDirIndex = sr.ReadUInt32();
+            CRCChecksum = sr.ReadUInt32();
+            CompressedSize = sr.ReadUInt32();
+            DataOffset = sr.ReadUInt64();
+            ResourceTypeSignature = sr.ReadUInt32();
+            ExpandedSize = sr.ReadUInt32(); // New
+        }
+        else
         {
             // 0x1C
             StringOffset = sr.ReadUInt32();
@@ -57,20 +83,6 @@ public class CakeFileEntry
             CompressedSize = sr.ReadUInt32();
             DataOffset = sr.ReadUInt64();
             ResourceTypeSignature = sr.ReadUInt32();
-        }
-        else
-        {
-            StringOffset = sr.ReadUInt32();
-            ParentDirIndex = sr.ReadUInt32();
-            CompressedSize = sr.ReadUInt32();
-            ResourceTypeSignature = sr.ReadUInt32();
-            DataOffset = sr.ReadUInt64();
-            DecompressedSize = sr.ReadUInt32();
-            NumChunks = sr.ReadUInt16();
-            RawBitFlags = sr.ReadUInt32();
-
-            for (int i = 0; i < NumChunks; i++)
-                ChunkSizes.Add(sr.ReadUInt32());
         }
     }
 }

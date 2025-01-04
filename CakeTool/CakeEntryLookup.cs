@@ -8,12 +8,13 @@ using Syroot.BinaryData.Memory;
 
 namespace CakeTool;
 
-public class CakeFileLookupEntry
+// SysCore::EntryLookup
+public class CakeEntryLookup
 {
     public ulong NameHash { get; set; }
     public uint BitFlags { get; set; }
 
-    public uint FileEntryIndex => BitFlags & 0x7FFFFFFF;
+    public uint EntryIndex => BitFlags & 0x7FFFFFFF;
     public bool IsEmptyFile => (BitFlags >> 31) != 0;
 
     public void Read(ref SpanReader sr)

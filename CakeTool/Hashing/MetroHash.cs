@@ -165,4 +165,87 @@ public class MetroHash
         // memcpy(out, v, 16);
         MemoryMarshal.Cast<ulong, byte>(v.AsSpan(0, 2)).CopyTo(outData);
     }
+
+    // This one has different constants, it is based on crc_1 variant
+    public static void MetroHashUnkCustomV9_1(Span<byte> key, uint len, uint seed, byte[] outHash)
+    {
+        // Some weird metrohash variant, the constants are unknown.
+        Span<ulong> ulongs = MemoryMarshal.Cast<byte, ulong>(key);
+
+        const ulong k0 = 0x63516654;
+        const ulong k1 = 0x68576D5A;
+        const ulong k2 = 0x482B4D62;
+        const ulong k3 = 0x51655468;
+
+        Span<byte> ptr = key;
+        Span<byte> end = ptr.Slice((int)len);
+
+        ulong[] v = new ulong[4];
+
+        v[0] = ((seed - k0) * k3) + len;
+        v[1] = ((seed + k1) * k2) + len;
+
+        if (len >= 32)
+        {
+            v[2] = ((seed + k0) * k2) + len;
+            v[3] = ((seed - k1) * k3) + len;
+
+            do
+            {
+                v[0] ^= BitOperations.Crc32C((uint)v[0], BinaryPrimitives.ReadUInt64LittleEndian(ptr)); ptr = ptr[8..];
+                v[1] ^= BitOperations.Crc32C((uint)v[1], BinaryPrimitives.ReadUInt64LittleEndian(ptr)); ptr = ptr[8..];
+                v[2] ^= BitOperations.Crc32C((uint)v[2], BinaryPrimitives.ReadUInt64LittleEndian(ptr)); ptr = ptr[8..];
+                v[3] ^= BitOperations.Crc32C((uint)v[3], BinaryPrimitives.ReadUInt64LittleEndian(ptr)); ptr = ptr[8..];
+            }
+            while (ptr.Length >= 32);
+
+            v[2] ^= BitOperations.RotateRight(((v[0] + v[3]) * k0) + v[1], 34) * k1;
+            v[3] ^= BitOperations.RotateRight(((v[1] + v[2]) * k1) + v[0], 37) * k0;
+            v[0] ^= BitOperations.RotateRight(((v[0] + v[2]) * k0) + v[3], 34) * k1;
+            v[1] ^= BitOperations.RotateRight(((v[1] + v[3]) * k1) + v[2], 37) * k0;
+        }
+
+        if (ptr.Length >= 16)
+        {
+            v[0] += BinaryPrimitives.ReadUInt64LittleEndian(ptr) * k2; ptr = ptr[8..]; v[0] = BitOperations.RotateRight(v[0], 34) * k3;
+            v[1] += BinaryPrimitives.ReadUInt64LittleEndian(ptr) * k2; ptr = ptr[8..]; v[1] = BitOperations.RotateRight(v[1], 34) * k3;
+            v[0] ^= BitOperations.RotateRight((v[0] * k2) + v[1], 30) * k1;
+            v[1] ^= BitOperations.RotateRight((v[1] * k3) + v[0], 30) * k0;
+        }
+
+        if (ptr.Length >= 8)
+        {
+            v[0] += BinaryPrimitives.ReadUInt64LittleEndian(ptr) * k2; ptr = ptr[8..]; v[0] = BitOperations.RotateRight(v[0], 36) * k3;
+            v[0] ^= BitOperations.RotateRight((v[0] * k2) + v[1], 23) * k1;
+        }
+
+        // No idea if the implementation is wrong by whoever wrote it first, but crc32 instruction is receiving a 64bit input, while the data is 32
+        // same for the rest
+        // hence the ulong cast
+        if (ptr.Length >= 4)
+        {
+            v[1] ^= BitOperations.Crc32C((uint)v[0], (ulong)BinaryPrimitives.ReadUInt32LittleEndian(ptr)); ptr = ptr[4..];
+            v[1] ^= BitOperations.RotateRight((v[1] * k3) + v[0], 19) * k0;
+        }
+
+        if (ptr.Length >= 2)
+        {
+            v[0] ^= BitOperations.Crc32C((uint)v[1], (ulong)BinaryPrimitives.ReadUInt16LittleEndian(ptr)); ptr = ptr[2..];
+            v[0] ^= BitOperations.RotateRight((v[0] * k2) + v[1], 13) * k1;
+        }
+
+        if (ptr.Length >= 1)
+        {
+            v[1] ^= BitOperations.Crc32C((uint)v[0], (ulong)ptr[0]);
+            v[1] ^= BitOperations.RotateRight((v[1] * k3) + v[0], 17) * k0;
+        }
+
+        v[0] += BitOperations.RotateRight((v[0] * k0) + v[1], 11);
+        v[1] += BitOperations.RotateRight((v[1] * k1) + v[0], 26);
+        v[0] += BitOperations.RotateRight((v[0] * k0) + v[1], 11);
+        v[1] += BitOperations.RotateRight((v[1] * k1) + v[0], 26);
+
+        // memcpy(out, v, 16);
+        MemoryMarshal.Cast<ulong, byte>(v.AsSpan(0, 2)).CopyTo(outHash);
+    }
 }
