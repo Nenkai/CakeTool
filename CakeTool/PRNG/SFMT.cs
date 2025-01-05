@@ -17,7 +17,7 @@
  */
 using System;
 
-namespace CakeTool.Crypto;
+namespace CakeTool.PRNG;
 
 /// <summary>
 /// SFMTの擬似乱数ジェネレータークラス。

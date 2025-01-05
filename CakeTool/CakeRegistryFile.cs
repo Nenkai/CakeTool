@@ -17,6 +17,7 @@ using CommunityToolkit.HighPerformance.Buffers;
 using CakeTool.Crypto;
 using CakeTool.Hashing;
 using CakeTool.Compression;
+using CakeTool.PRNG;
 
 using Syroot.BinaryData;
 using Syroot.BinaryData.Memory;
@@ -31,9 +32,8 @@ public class CakeRegistryFile : IDisposable
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger _logger;
 
-    public const uint DirSignature = 0x52494446; // 'FDIR'
-
-    public const uint MAIN_HEADER_SIZE = 0x08;
+    public const uint FILESYS_DIR_SIGNATURE = 0x52494446; // 'FDIR'
+    public const int FILESYS_DIR_HEADER_SIZE = 0x08;
 
     public const int DIR_LOOKUP_TABLE_SECTION_INDEX = 0;
     public const int FILE_LOOKUP_TABLE_SECTION_INDEX = 1;
@@ -47,6 +47,7 @@ public class CakeRegistryFile : IDisposable
     // v6.7/6.8 = 20
     // v8.1 = 21
     // v8.2/v8.3 = 22
+    // v8.7 = 23
     // v9.1/v9.2 = 24
     public byte VersionMajor { get; set; } 
     public byte VersionMinor { get; set; }
@@ -56,17 +57,14 @@ public class CakeRegistryFile : IDisposable
     /// <summary>
     /// Whether the cake is encrypted, at least the header and toc.
     /// </summary>
-    public bool IsEncrypted { get; set; }
+    public bool IsHeaderEncrypted { get; set; }
 
-    // Encryption stuff
-    public const string ConstantKeyV9 = "V9w0ooTmKK'{z!mg6b$E%1,s2)nj2o_";
-    public const string ConstantIVV9 = "XC;JQm8";
-
-    public const string ConstantKeyV8 = "r-v4WVyWOprRr7Qw9kN0myq5KCXGaaf";
-    public const string ConstantIVV8 = "xTKmfw_";
+    /// <summary>
+    /// For V6 through 8.3, otherwise look into <see cref="CakeFileEntry"/> for later versions
+    /// </summary>
+    public bool IsFileDataEncrypted { get; set; }
 
     public uint MainCryptoKey { get; set; }
-    private ChaCha20 _chaCha20Ctx;
 
     // Sections
     private List<CakeFileHeaderSection> _sections = [];
@@ -97,7 +95,19 @@ public class CakeRegistryFile : IDisposable
     private Dictionary<uint, string> _strings = [];
 
     private FileStream _fileStream;
+
+    // This is needed for certain cakes that do not have encryption despite their headers marked as such.
+    // Game basically correctly checks the header and goes into a function for handling encryption, but they're stubbed in those builds.
     private bool _forceNoEncryption;
+
+    private ChaCha20 _chaCha20Ctx;
+
+    // Encryption stuff
+    public const string ConstantKeyV9 = "V9w0ooTmKK'{z!mg6b$E%1,s2)nj2o_";
+    public const string ConstantIVV9 = "XC;JQm8";
+
+    public const string ConstantKeyV8 = "r-v4WVyWOprRr7Qw9kN0myq5KCXGaaf";
+    public const string ConstantIVV8 = "xTKmfw_";
 
     private CakeRegistryFile(string fileName, FileStream fs, ILoggerFactory? loggerFactory = null, bool forceNoEncryption = false)
     {
@@ -118,6 +128,27 @@ public class CakeRegistryFile : IDisposable
         var cake = new CakeRegistryFile(file, fs, loggerFactory, forceNoEncryption);
         cake.OpenInternal();
         return cake;
+    }
+
+    private bool IsVersion(byte versionMajor, byte versionMinor)
+    {
+        return VersionMajor == versionMajor && VersionMinor == versionMinor;
+    }
+
+    private bool IsAtLeastVersion(byte versionMajor, byte versionMinor = 0)
+    {
+        if (VersionMajor < versionMajor)
+            return false;
+
+        return VersionMajor > versionMajor || (VersionMajor == versionMajor && VersionMinor >= versionMinor);
+    }
+
+    public uint GetHeaderAndSectionInfoSize()
+    {
+        if (IsAtLeastVersion(9))
+            return 0x5Cu;
+        else
+            return 0x58u;
     }
 
     // UI/Projects/ShowAssets/superstar_nameplates
@@ -173,11 +204,11 @@ public class CakeRegistryFile : IDisposable
         if (bs.Length < 0x58)
             throw new InvalidDataException("Invalid cake file. file is too small to contain main header, corrupted?");
 
-        byte[] headerBytes = new byte[0x08]; 
+        Span<byte> headerBytes = stackalloc byte[0x08]; 
         bs.ReadExactly(headerBytes);
         FilesysDirHeader header = MemoryMarshal.Cast<byte, FilesysDirHeader>(headerBytes)[0];
 
-        if (header.Signature != DirSignature)
+        if (header.Signature != FILESYS_DIR_SIGNATURE)
             throw new InvalidDataException("Not a valid cake file, signature did not match 'FDIR'.");
 
         VersionMajor = (byte)(header.Version & 0xFF);
@@ -185,18 +216,20 @@ public class CakeRegistryFile : IDisposable
 
         _logger?.LogInformation("Cake Version: v{major}.{minor}", VersionMajor, VersionMinor);
 
-        if (VersionMajor == 6 || VersionMajor == 8)
+        if (VersionMajor == 6 || (VersionMajor == 8 && VersionMinor < 7)) // v6, v8.1 thru 6? maybe?
         {
-            short unk = (short)(header.Flags & 0b11_1111_1111_1111);
+            TypeOrParam = (CakeRegistryType)(header.Flags & 0b11_1111_1111_1111); // Is it 8 and 6 bits split?
+
             // is bit 14 header/toc encryption, and bit 15 file encryption maybe?
-            byte headerEncryption = (byte)((header.Flags >> 14) & 1);
-            IsEncrypted = (header.Flags >> 15) == 1; // 1 bit - file encryption
+            // needs further testing tbh.
+            IsHeaderEncrypted = ((header.Flags >> 14) & 1) == 1;
+            IsFileDataEncrypted = (header.Flags >> 15) == 1;
         }
-        else if (VersionMajor == 9)
+        else if (IsAtLeastVersion(8, 7)) // >=v8.7 - encryption flag on files moved to entry infos.
         {
             byte unk = (byte)(header.Flags & 0b11111111);
             TypeOrParam = (CakeRegistryType)((header.Flags >> 8) & 0b1111111);
-            IsEncrypted = (header.Flags >> 15) == 1; // 1 bit
+            IsHeaderEncrypted = (header.Flags >> 15) == 1; // 1 bit
         }
 
         _logger?.LogInformation("Type: {type} ({typeNumber})", TypeOrParam, (int)TypeOrParam);
@@ -204,7 +237,7 @@ public class CakeRegistryFile : IDisposable
         MainCryptoKey = GenerateCryptoXorKey();
         _logger?.LogInformation("Crypto Key: {key:X8}", MainCryptoKey);
 
-        uint headerPlusSectionTocSize = VersionMajor >= 8 ? 0x5Cu : 0x58u;
+        uint headerPlusSectionTocSize = GetHeaderAndSectionInfoSize();
         if (bs.Length < headerPlusSectionTocSize)
             throw new InvalidDataException("Invalid cake file. file is too small to contain main header + section, corrupted?");
 
@@ -212,11 +245,16 @@ public class CakeRegistryFile : IDisposable
         bs.Position = 0;
         bs.ReadExactly(sectionHeaderBytes);
 
-        if (!_forceNoEncryption && IsEncrypted)
-            CryptHeaderData(sectionHeaderBytes.AsSpan(0x08, (int)(headerPlusSectionTocSize - MAIN_HEADER_SIZE)), MainCryptoKey);
+        if (!_forceNoEncryption && IsHeaderEncrypted)
+        {
+            Span<byte> sectionInfoBytes = sectionHeaderBytes.AsSpan(FILESYS_DIR_HEADER_SIZE,
+                (int)(headerPlusSectionTocSize - FILESYS_DIR_HEADER_SIZE));
+
+            CryptHeaderData(sectionInfoBytes, MainCryptoKey);
+        }
 
         SpanReader sectionReader = new SpanReader(sectionHeaderBytes, Syroot.BinaryData.Core.Endian.Little);
-        sectionReader.Position = 8;
+        sectionReader.Position = FILESYS_DIR_HEADER_SIZE;
         ReadSections(bs, sectionReader);
 
         if (TypeOrParam == CakeRegistryType.External)
@@ -237,7 +275,7 @@ public class CakeRegistryFile : IDisposable
     private void ExtractEntry(CakeFileEntry entry, string fileName, string outputDir)
     {
         string gamePath;
-        if (VersionMajor >= 8)
+        if (IsAtLeastVersion(8))
         {
             CakeDirInfo parentDir = _dirEntries[(int)entry.ParentDirIndex];
             string dirName = _strings[parentDir.PathStringOffset];
@@ -247,7 +285,6 @@ public class CakeRegistryFile : IDisposable
             gamePath = fileName; // Old versions has the full path.
 
         string outputPath = Path.Combine(outputDir, gamePath);
-
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
         _logger?.LogInformation("Extracting: {file}", gamePath);
@@ -263,9 +300,10 @@ public class CakeRegistryFile : IDisposable
             using var inputBuffer = MemoryOwner<byte>.Allocate((int)entry.CompressedSize);
             _fileStream.ReadExactly(inputBuffer.Span);
 
-            if ((VersionMajor == 6 && IsEncrypted) ||
-                (VersionMajor == 8 && IsEncrypted) ||
-                (VersionMajor >= 9 && (entry.UnkBits2 & 1) == 1))
+            if ((VersionMajor == 6 && IsFileDataEncrypted) ||
+                ((IsVersion(8, 2) || IsVersion(8, 3)) && IsFileDataEncrypted) ||
+                (IsVersion(8, 7) && entry.RawBitFlags != 0) ||
+                (VersionMajor >= 9 && (entry.UnkBits2 & 1) != 0))
             {
                 uint key = GetFileManglingKey(entry);
                 CryptFileDataAndCheck(inputBuffer.Span, entry, key);
@@ -304,6 +342,7 @@ public class CakeRegistryFile : IDisposable
             }
         }
     }
+
 
     // Mostly used in Version 6/8.
     private void ExtractResource(string fileName, string dirName, string outputPath, MemoryOwner<byte> inputBuffer)
@@ -393,7 +432,7 @@ public class CakeRegistryFile : IDisposable
         _logger?.LogInformation("Num Files: {fileCount}", fileCount);
         _logger?.LogInformation("Num Folders: {folderCount}", dirCount);
 
-        if (VersionMajor >= 9)
+        if (IsAtLeastVersion(9))
         {
             uint chunkCount = hdrReader.ReadUInt32(); // Sum of all number of chunks from each file entry
             _logger?.LogInformation("Num Chunks: {chunkCount}", chunkCount);
@@ -406,6 +445,8 @@ public class CakeRegistryFile : IDisposable
             uint secOffset = hdrReader.ReadUInt32();
             _sections.Add(new CakeFileHeaderSection(secSize, secCrc, secOffset));
         }
+
+        // These two seem to be always empty.
         uint pad1 = hdrReader.ReadUInt32();
         uint pad2 = hdrReader.ReadUInt32();
         uint totalTocSize = hdrReader.ReadUInt32(); // aka header (0x5C) + all sections
@@ -422,7 +463,6 @@ public class CakeRegistryFile : IDisposable
         Debug.Assert(bs.Position == totalTocSize);
 
         _logger?.LogInformation("Done reading sections.");
-
     }
 
     private void ReadFileLookupTable(BinaryStream bs, uint numFiles)
@@ -431,7 +471,7 @@ public class CakeRegistryFile : IDisposable
         byte[] sectionData = new byte[_sections[FILE_LOOKUP_TABLE_SECTION_INDEX].Size];
         bs.ReadExactly(sectionData);
 
-        if (!_forceNoEncryption && IsEncrypted)
+        if (!_forceNoEncryption && IsHeaderEncrypted)
         {
             uint crc = CryptHeaderData(sectionData, MainCryptoKey);
             if (crc != _sections[FILE_LOOKUP_TABLE_SECTION_INDEX].Checksum)
@@ -453,10 +493,10 @@ public class CakeRegistryFile : IDisposable
         byte[] sectionData = new byte[_sections[DIR_INFO_TABLE_SECTION_INDEX].Size];
         bs.ReadExactly(sectionData);
 
-        if (!_forceNoEncryption && IsEncrypted)
+        if (!_forceNoEncryption && IsHeaderEncrypted)
         {
             uint crc = CryptHeaderData(sectionData, MainCryptoKey);
-            if (crc != _sections[3].Checksum)
+            if (crc != _sections[DIR_INFO_TABLE_SECTION_INDEX].Checksum)
                 throw new InvalidCastException("Dir entries section checksum did not match. Invalid or corrupted?");
         }
 
@@ -475,7 +515,7 @@ public class CakeRegistryFile : IDisposable
         byte[] sectionData = new byte[_sections[DIR_LOOKUP_TABLE_SECTION_INDEX].Size];
         bs.ReadExactly(sectionData);
 
-        if (!_forceNoEncryption && IsEncrypted)
+        if (!_forceNoEncryption && IsHeaderEncrypted)
         {
             uint crc = CryptHeaderData(sectionData, MainCryptoKey);
             if (crc != _sections[DIR_LOOKUP_TABLE_SECTION_INDEX].Checksum)
@@ -497,7 +537,7 @@ public class CakeRegistryFile : IDisposable
         byte[] entries = new byte[_sections[FILE_INFO_TABLE_SECTION_INDEX].Size];
         bs.ReadExactly(entries);
 
-        if (!_forceNoEncryption && IsEncrypted)
+        if (!_forceNoEncryption && IsHeaderEncrypted)
         {
             uint crc = CryptHeaderData(entries, MainCryptoKey);
             if (crc != _sections[FILE_INFO_TABLE_SECTION_INDEX].Checksum)
@@ -520,7 +560,7 @@ public class CakeRegistryFile : IDisposable
         byte[] stringTableSection = new byte[_sections[STRING_TABLE_SECTION_INDEX].Size];
         bs.ReadExactly(stringTableSection);
 
-        if (!_forceNoEncryption && IsEncrypted)
+        if (!_forceNoEncryption && IsHeaderEncrypted)
         {
             uint crc = CryptHeaderData(stringTableSection, MainCryptoKey);
             if (crc != _sections[STRING_TABLE_SECTION_INDEX].Checksum)
@@ -530,32 +570,11 @@ public class CakeRegistryFile : IDisposable
         ReadStringEntries(stringTableSection);
     }
 
-    private uint GenerateCryptoXorKey()
-    {
-        if (VersionMajor == 6 || (VersionMajor == 8 && VersionMinor == 1))
-        {
-            if (VersionMajor == 6 && VersionMinor == 7) // 6.7
-                return GenerateCryptoKeyV6_7();
-            else if ((VersionMajor == 8 && VersionMinor == 1) || (VersionMajor == 6 && VersionMinor == 8)) // 6.8 or 8.1 (? not sure for 8.1)
-                return GenerateCryptoKeyV6_8();
-        }
-        else if (VersionMajor == 8 && VersionMinor == 2) // 8.2
-            return GenerateCryptoKeyV8_2();
-        else if (VersionMajor == 8 && VersionMinor == 3) // 8.3
-            return GenerateCryptoKeyV8_3();
-        else if (VersionMajor == 9 && VersionMinor == 1) // 9.1
-            return GenerateCryptoKeyV9_1();
-        else if (VersionMajor == 9 && VersionMinor == 2) // 9.2
-            return GenerateCryptoKeyV9_2();
-        
-        throw new NotSupportedException($"Cake v{VersionMajor}.{VersionMinor} are not yet supported.");
-    }
-
     private void ReadStringEntries(byte[] stringTableSection)
     {
         SpanReader sr = new SpanReader(stringTableSection);
 
-        if (VersionMajor >= 9)
+        if (IsAtLeastVersion(9))
         {
             uint unk = sr.ReadUInt16();
         }
@@ -564,10 +583,10 @@ public class CakeRegistryFile : IDisposable
         {
             uint strOffset = (uint)sr.Position;
             string str;
-            if (VersionMajor >= 8)
+            if (IsAtLeastVersion(8))
             {
                 // This has a length, but is still null terminated
-                if (!_forceNoEncryption && IsEncrypted)
+                if (!_forceNoEncryption && IsHeaderEncrypted)
                     str = ReadScrambledString(ref sr);
                 else
                     str = sr.ReadString1();
@@ -579,10 +598,36 @@ public class CakeRegistryFile : IDisposable
         }
     }
 
+    /***************************************
+     * 
+     * Welcome to the crypto zone!
+     * 
+     ***************************************/
+
+    private uint GenerateCryptoXorKey()
+    {
+        if (IsVersion(6, 7))
+            return GenerateCryptoKeyV6_7();
+        if (IsVersion(6, 8) || IsVersion(8, 1))
+            return GenerateCryptoKeyV6_8();
+        else if (IsVersion(8, 2))
+            return GenerateCryptoKeyV8_2();
+        else if (IsVersion(8, 3))
+            return GenerateCryptoKeyV8_3();
+        else if (IsVersion(8, 7))
+            return GenerateCryptoKeyV8_7();
+        else if (IsVersion(9, 1))
+            return GenerateCryptoKeyV9_1();
+        else if (IsVersion(9, 2))
+            return GenerateCryptoKeyV9_2();
+        
+        throw new NotSupportedException($"Cake v{VersionMajor}.{VersionMinor} are not yet supported.");
+    }
+
     private string ReadScrambledString(ref SpanReader sr)
     {
         uint key;
-        if (VersionMajor == 8 && VersionMinor == 2)
+        if (IsVersion(8, 2))
             key = (uint)BinaryPrimitives.ReverseEndianness(sr.Position);
         else
             key = (uint)sr.Position;
@@ -590,11 +635,11 @@ public class CakeRegistryFile : IDisposable
         byte strLen = sr.ReadByte();
         byte[] bytes = sr.ReadBytes(strLen + 1);
 
-        if (VersionMajor == 8 && VersionMinor == 3)
+        if (IsVersion(8, 3))
         {
             RotateCrypt(bytes, key);
         }
-        else
+        else // v6, >=8.7
         {
             ScrambleBytes(bytes, key);
         }
@@ -602,102 +647,64 @@ public class CakeRegistryFile : IDisposable
         return Encoding.ASCII.GetString(bytes.AsSpan(0, bytes.Length - 1));
     }
 
-    private static void RotateCrypt(Span<byte> bytes, uint key)
-    {
-        byte[] keyBytes = BitConverter.GetBytes(key);
-        for (int i = 0; i < bytes.Length; i++)
-        {
-            byte rotated = byte.RotateRight(bytes[i], (i - 1) ^ 5);
-            bytes[i] = byte.RotateLeft((byte)(rotated ^ (i + keyBytes[((byte)i + 1) % 4] - 1)), i + 1);
-        }
-    }
-
-    static uint ExtractU8_U32(uint val, int byteIndex)
-        => (val >> (8 * byteIndex));
-
-    static ulong ExtractU8_U64(ulong val, int byteIndex)
-        => (val >> (8 * byteIndex));
-
-    static void ScrambleBytes(Span<byte> data, uint key)
-    {
-        for (int i = 0; i < data.Length; i++)
-        {
-            int byteOffset = (int)ExtractU8_U32(key, i);
-            data[i] ^= (byte)(i + byteOffset);
-        }
-    }
-
     // SysCore::BakedDataFile::GetFileManglingKey
     private uint GetFileManglingKey(CakeFileEntry entry)
     {
-        ulong base_ = 0xCBF29CE484222325;
-
-        if (VersionMajor == 6)
-        { 
-            if (VersionMinor == 7)
-                return ~(entry.CompressedSize ^ MainCryptoKey);
-            else if (VersionMinor == 8)
-                return entry.CompressedSize ^ MainCryptoKey;
-        }
-        else if (VersionMajor == 8)
+        if (IsVersion(6, 7))
         {
-            if (VersionMinor == 2)
-            {
-                return BinaryPrimitives.ReverseEndianness(entry.CRCChecksum);
-            }
-            else if (VersionMinor == 3)
-            {
-                Span<byte> toHash = new byte[3 * sizeof(ulong)];
-                BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x00..], MainCryptoKey);
-                BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x08..], entry.CompressedSize);
-                BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x10..], entry.DataOffset);
-
-                for (int i = 0; i < 0x18; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)toHash[i] ^ (long)base_);
-
-                return (uint)((base_ & 0xFFFFFFFF) ^ (base_ >> 32));
-            }
+            return ~(entry.CompressedSize ^ MainCryptoKey);
         }
-        else if (VersionMajor == 9)
+        else if (IsVersion(6, 8))
         {
-            // Signedness matters
-            if (VersionMinor == 1)
-            {
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(MainCryptoKey, i) ^ (long)base_);
+            return entry.CompressedSize ^ MainCryptoKey;
+        }
+        else if (IsVersion(8, 2))
+        {
+            return BinaryPrimitives.ReverseEndianness(entry.CRCChecksum);
+        }
+        else if (IsVersion(8, 3))
+        {
+            Span<byte> toHash = stackalloc byte[3 * sizeof(ulong)];
+            BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x00..], MainCryptoKey);
+            BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x08..], entry.CompressedSize);
+            BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x10..], entry.DataOffset);
 
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~MainCryptoKey, i) ^ (long)base_);
+            ulong val = 0xCBF29CE484222325;
+            for (int i = 0; i < 0x18; i++)
+                val = 0x100000001B3L * (ulong)((sbyte)toHash[i] ^ (long)val);
 
-                for (int i = 0; i < 8; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U64(entry.DataOffset, i) ^ (long)base_);
+            return (uint)((val & 0xFFFFFFFF) ^ (val >> 32));
+        }
+        else if (IsVersion(8, 7) || IsVersion(9, 1))
+        {
+            Span<byte> toHash = stackalloc byte[4 + 4 + 8 + 4 + 4];
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x00..], MainCryptoKey);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x04..], ~MainCryptoKey);
+            BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x08..], entry.DataOffset);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x10..], entry.CompressedSize);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x14..], ~entry.CompressedSize);
 
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(entry.CompressedSize, i) ^ (long)base_);
+            ulong val = 0xCBF29CE484222325;
+            for (int i = 0; i < 0x18; i++)
+                val = 0x100000001B3L * (ulong)((sbyte)toHash[i] ^ (long)val);
 
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~entry.CompressedSize, i) ^ (long)base_);
-                return (uint)((base_ & 0xFFFFFFFF) ^ (base_ >> 32));
-            }
-            else if (VersionMinor == 2)
-            {
-                // The order was changed a bit.
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~entry.CompressedSize, i) ^ (long)base_);
+            return (uint)((val & 0xFFFFFFFF) ^ (val >> 32));
+        }
+        else if (IsVersion(9, 2))
+        {
+            // Order was changed a bit.
+            Span<byte> toHash = stackalloc byte[4 + 4 + 4 + 4 + 8];
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x00..], ~entry.CompressedSize);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x04..], entry.CompressedSize);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x08..], ~MainCryptoKey);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x0C..], MainCryptoKey);
+            BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x10..], ~entry.DataOffset);
 
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(entry.CompressedSize, i) ^ (long)base_);
+            ulong val = 0xCBF29CE484222325;
+            for (int i = 0; i < 0x18; i++)
+                val = 0x100000001B3L * (ulong)((sbyte)toHash[i] ^ (long)val);
 
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(~MainCryptoKey, i) ^ (long)base_);
-
-                for (int i = 0; i < 4; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U32(MainCryptoKey, i) ^ (long)base_);
-
-                for (int i = 0; i < 8; i++)
-                    base_ = 0x100000001B3L * (ulong)((sbyte)ExtractU8_U64(~entry.DataOffset, i) ^ (long)base_);
-                return (uint)((base_ & 0xFFFFFFFF) ^ ~(base_ >> 32)); // flip bits of higher 32
-            }
+            return (uint)((val & 0xFFFFFFFF) ^ ~(val >> 32)); // We also flip bits of the higher 32.
         }
 
         throw new NotSupportedException();
@@ -711,34 +718,32 @@ public class CakeRegistryFile : IDisposable
             if (crc != fileEntry.CRCChecksum)
                 throw new Exception("V6 File decryption checksum failed.");
         }
-        else if (VersionMajor == 8)
+        else if (IsVersion(8, 2))
         {
-            if (VersionMinor == 2)
-            {
-                ScrambleBytes(data, key);
-                if (CRC32C.Hash(data) != fileEntry.CRCChecksum)
-                    throw new Exception("V8.2 File decryption checksum failed.");
-            }
-            else if (VersionMinor == 3)
-            {
-                for (int i = 0; i < data.Length; i++)
-                {
-                    byte val = byte.RotateRight(data[i], (i - 1) % 8 ^ 0xD);
-                    val = byte.RotateLeft((byte)(val ^ (i - 1 + ExtractU8_U32(key, (i + 1) % 4))), (i + 1) % 8);
-                    data[i] = val;
-                }
+            ScrambleBytes(data, key);
+            if (CRC32C.Hash(data) != fileEntry.CRCChecksum)
+                throw new Exception("V8.2 File decryption checksum failed.");
 
-                if (CRC32C.Hash(data) != fileEntry.CRCChecksum)
-                    throw new Exception("V8.3 File decryption checksum failed.");
-            }
         }
-        else if (VersionMajor >= 9)
+        else if (IsVersion(8, 3))
+        {
+            for (int i = 0; i < data.Length; i++)
+            {
+                byte val = byte.RotateRight(data[i], (i - 1) % 8 ^ 0xD);
+                val = byte.RotateLeft((byte)(val ^ (i - 1 + Utils.ExtractU8_U32(key, (i + 1) % 4))), (i + 1) % 8);
+                data[i] = val;
+            }
+
+            if (CRC32C.Hash(data) != fileEntry.CRCChecksum)
+                throw new Exception("V8.3 File decryption checksum failed.");
+        }
+        else if (IsAtLeastVersion(8, 7))
         {
             // only the first 0x100 bytes are ever encrypted.
             for (int i = 0; i < Math.Min(fileEntry.CompressedSize, 0x100); i++)
             {
                 byte val = byte.RotateRight(data[i], (i - 1) % 8 ^ 0xD);
-                val = byte.RotateLeft((byte)(val ^ (i - 1 + ExtractU8_U32(key, (i + 1) % 4))), (i + 1) % 8);
+                val = byte.RotateLeft((byte)(val ^ (i - 1 + Utils.ExtractU8_U32(key, (i + 1) % 4))), (i + 1) % 8);
                 data[i] = val;
             }
         }
@@ -746,24 +751,46 @@ public class CakeRegistryFile : IDisposable
 
     private uint CryptHeaderData(Span<byte> data, uint key)
     {
-        if (VersionMajor == 8)
-        {
-            if (VersionMinor == 2)
-            {
-                byte[] bytes = BitConverter.GetBytes(BinaryPrimitives.ReverseEndianness(key));
-                for (int i = 0; i < data.Length; i++)
-                    data[i] ^= (byte)((byte)i + bytes[i % 4]);
-            }
-            else if (VersionMinor == 3)
-            {
-                RotateCrypt(data, key);
-            }
-
-            return CRC32C.Hash(data);
-        }
-        else
+        if (VersionMajor == 6) // 6.x
         {
             return XORCRCData(data, key);
+        }
+        else if (IsVersion(8, 2)) // 8.2
+        {
+            byte[] bytes = BitConverter.GetBytes(BinaryPrimitives.ReverseEndianness(key));
+            for (int i = 0; i < data.Length; i++)
+                data[i] ^= (byte)((byte)i + bytes[i % 4]);
+            return CRC32C.Hash(data);
+        }
+        else if (IsVersion(8, 3)) // 8.3
+        {
+            RotateCrypt(data, key);
+            return CRC32C.Hash(data);
+        }
+        else if (IsAtLeastVersion(8, 7)) // >= 8.7
+        {
+            return XORCRCData(data, key);
+        }
+        else
+            throw new NotImplementedException();
+    }
+
+    private static void RotateCrypt(Span<byte> bytes, uint key)
+    {
+        byte[] keyBytes = BitConverter.GetBytes(key);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            byte rotated = byte.RotateRight(bytes[i], (i - 1) ^ 5);
+            bytes[i] = byte.RotateLeft((byte)(rotated ^ (i + keyBytes[((byte)i + 1) % 4] - 1)), i + 1);
+        }
+    }
+
+    static void ScrambleBytes(Span<byte> data, uint key)
+    {
+        for (int i = 0; i < data.Length; i++)
+        {
+            int byteOffset = (int)Utils.ExtractU8_U32(key, i);
+            data[i] ^= (byte)(i + byteOffset);
         }
     }
 
@@ -824,7 +851,7 @@ public class CakeRegistryFile : IDisposable
     private uint GenerateCryptoKeyV6_8()
     {
         Memory<byte> keyOne = CreateInitialKeyTableFromNameSeed(FileName, 0x40);
-        byte[] outHash = new byte[0x10];
+        Span<byte> outHash = stackalloc byte[0x10];
         MetroHash.Metrohash128crc_1(keyOne.Span.Slice(0, 0x3F), 0x3F, 0, outHash);
 
         Span<uint> hashInts = MemoryMarshal.Cast<byte, uint>(outHash);
@@ -836,9 +863,9 @@ public class CakeRegistryFile : IDisposable
     {
         string nameSeed = $"{FileName.ToLower()}{VersionMajor:D2}{VersionMinor:D2}";
         Memory<byte> table = CreateInitialKeyTableFromNameSeed(nameSeed, 0x40);
-        ChaChaTweakKeyTable(table);
+        Chacha20Crypt(table.Span);
 
-        byte[] metroHash = new byte[0x10];
+        Span<byte> metroHash = stackalloc byte[0x10];
         MetroHash.MetroHashUnkCustomV9_1(table.Span.Slice(0, 0x3F), 0x3F, 0, metroHash);
 
         Span<uint> hashInts = MemoryMarshal.Cast<byte, uint>(metroHash);
@@ -850,10 +877,10 @@ public class CakeRegistryFile : IDisposable
     {
         string nameSeed = $"{FileName.ToLower()}{VersionMajor:D2}{VersionMinor:D2}";
         Memory<byte> table = CreateInitialKeyTableFromNameSeed(nameSeed, 0x40);
-        ChaChaTweakKeyTable(table.Slice(0, 0x3F));
+        Chacha20Crypt(table.Span.Slice(0, 0x3F));
 
         // Alter table by putting a metrohash in it
-        byte[] metroHash = new byte[0x10];
+        Span<byte> metroHash = stackalloc byte[0x10];
         MetroHash.MetroHashUnkCustomV9_1(table.Span.Slice(0, 0x3F), 0x3F, 0, metroHash);
 
         Span<uint> tableInts = MemoryMarshal.Cast<byte, uint>(table.Span);
@@ -872,7 +899,7 @@ public class CakeRegistryFile : IDisposable
             seed = table.Span[i];
         }
 
-        byte[] metroHash2 = new byte[0x10];
+        Span<byte> metroHash2 = stackalloc byte[0x10];
         MetroHash.MetroHashUnkCustomV9_1(table.Span.Slice(0, 0x3F), 0x3F, 0, metroHash2);
 
         Span<uint> hashInts2 = MemoryMarshal.Cast<byte, uint>(metroHash2);
@@ -881,13 +908,13 @@ public class CakeRegistryFile : IDisposable
         return key;
     }
 
-    private uint GenerateCryptoKeyV9_1()
+    private uint GenerateCryptoKeyV8_7()
     {
-        string nameSeed = $"{FileName.ToLower()}{VersionMajor:D3}{VersionMinor:D3}"; // D3 this time
+        string nameSeed = $"{FileName.ToLower()}{VersionMajor:D2}{VersionMinor:D2}";
         Memory<byte> table = CreateInitialKeyTableFromNameSeed(nameSeed, 0x80);
-        ChaChaTweakKeyTable(table);
+        Chacha20Crypt(table.Span);
 
-        byte[] metroHash = new byte[0x10];
+        Span<byte> metroHash = stackalloc byte[0x10];
         MetroHash.MetroHashUnkCustomV9_1(table.Span, 0x80, BinaryPrimitives.ReadUInt32LittleEndian(table.Span), metroHash);
 
         uint crcSeed = ~0u;
@@ -910,7 +937,44 @@ public class CakeRegistryFile : IDisposable
         _chaCha20Ctx.ResetCounter();
         _chaCha20Ctx.DecryptBytes(keyOneCopy, 0x40); // lower 0x40 bytes only
 
-        byte[] metroHash2 = new byte[0x10];
+        Span<byte> metroHash2 = stackalloc byte[0x10];
+        MetroHash.MetroHashUnkCustomV9_1(keyOneCopy, 0x80, crcSeed, metroHash2);
+        Span<uint> metroHash2Ints = MemoryMarshal.Cast<byte, uint>(metroHash2);
+
+        uint key = metroHash2Ints[0] ^ metroHash2Ints[1] ^ metroHash2Ints[2] ^ metroHash2Ints[3];
+        return key;
+    }
+
+    private uint GenerateCryptoKeyV9_1()
+    {
+        // Same as 8.7, but we use D3 this time
+        string nameSeed = $"{FileName.ToLower()}{VersionMajor:D3}{VersionMinor:D3}";
+        Memory<byte> table = CreateInitialKeyTableFromNameSeed(nameSeed, 0x80);
+        Chacha20Crypt(table.Span);
+
+        Span<byte> metroHash = stackalloc byte[0x10];
+        MetroHash.MetroHashUnkCustomV9_1(table.Span, 0x80, BinaryPrimitives.ReadUInt32LittleEndian(table.Span), metroHash);
+
+        byte[] keyOneCopy = table.ToArray();
+        Span<uint> keyOneUints = MemoryMarshal.Cast<byte, uint>(keyOneCopy);
+        Span<ulong> keyOneUlongs = MemoryMarshal.Cast<byte, ulong>(keyOneCopy);
+
+        uint crcSeed = ~0u;
+        for (int i = 0; i < keyOneUlongs.Length; i++)
+            crcSeed = BitOperations.Crc32C(crcSeed, keyOneUlongs[i]);
+        crcSeed = ~crcSeed;
+
+        Span<uint> metroHashInts = MemoryMarshal.Cast<byte, uint>(metroHash);
+        uint seed = metroHashInts[0] ^ metroHashInts[1] ^ metroHashInts[2] ^ metroHashInts[3];
+        for (int i = 0; i < 32; i++)
+        {
+            keyOneUints[i] ^= seed;
+            seed = keyOneUints[i];
+        }
+
+        Chacha20Crypt(keyOneCopy.AsSpan(0, 0x40)); // lower 0x40 bytes only
+
+        Span<byte> metroHash2 = stackalloc byte[0x10];
         MetroHash.MetroHashUnkCustomV9_1(keyOneCopy, 0x80, crcSeed, metroHash2);
         Span<uint> metroHash2Ints = MemoryMarshal.Cast<byte, uint>(metroHash2);
 
@@ -930,7 +994,7 @@ public class CakeRegistryFile : IDisposable
         uint mtSeed1 = ScrambleGenSeed(keyOne.Span);
 
         // Step 4: Crypt hash table
-        ChaChaTweakKeyTable(keyOne);
+        Chacha20Crypt(keyOne.Span);
 
         // Step 5: Generate a mt seed (upper 32) before hashing hash table
         uint mtSeed2 = ScrambleGenSeed(keyOne.Span);
@@ -967,7 +1031,7 @@ public class CakeRegistryFile : IDisposable
 
             // Not really used
             int byteIndex = (i + 1) % 4;
-            byte piece = (byte)(mask + (byte)ExtractU8_U32(finalSeed, byteIndex));
+            byte piece = (byte)(mask + (byte)Utils.ExtractU8_U32(finalSeed, byteIndex));
             byte rotated = byte.RotateRight(data, i + 1);
             keyOne.Span[i] = byte.RotateLeft((byte)(piece ^ rotated), mask ^ 5);
 
@@ -996,10 +1060,11 @@ public class CakeRegistryFile : IDisposable
             }
             k[0x3F] = 0; // Null termination, not needed, but that's what happens
         }
-        else if (VersionMajor == 8)
+        else if (IsVersion(8, 2) || IsVersion(8, 3))
         {
             // same, but this time go in reverse everytime we reach the start or end of the string
             // hello = "helloollehhello..."
+
             int seedIndex = 0;
             int incDirection = 1;
             for (int i = 0; i < length; i++)
@@ -1011,8 +1076,21 @@ public class CakeRegistryFile : IDisposable
                     incDirection = -incDirection; // Increment the other way around
             }
             k[length - 1] = 0;
+
         }
-        else if (VersionMajor == 9 && VersionMinor == 1)
+        else if (IsVersion(8, 7))
+        {
+            int i = 0;
+            while (i < length)
+            {
+                for (int j = 0; j < nameSeed.Length && i < length; j++)
+                    k[i++] = (byte)(nameSeed[j] ^ 0x32);
+
+                for (int j = nameSeed.Length - 2; j > 0 && i < length; j--)
+                    k[i++] = (byte)(nameSeed[j] ^ 0x32);
+            }
+        }
+        else if (IsVersion(9, 1))
         {
             // same, but flip bits
             int seedIndex = 0;
@@ -1026,48 +1104,50 @@ public class CakeRegistryFile : IDisposable
                     incDirection = -incDirection; // Increment the other way around
             }
         }
-        else if (VersionMajor == 9 && VersionMinor == 2)
+        else if (IsVersion(9, 2))
         {
-            k = new byte[0x100]; // < TODO fix this.
-
             int i = 0;
             while (i < length)
             {
-                for (int j = 0; j < nameSeed.Length; j++)
-                {
+                for (int j = 0; j < nameSeed.Length && i < length; j++)
                     k[i] = (byte)(nameSeed[j] ^ (nameSeed[j] + (i++ ^ 0x1C)));
-                }
 
-                for (int j = nameSeed.Length - 2; j > 0; j--)
-                {
+                for (int j = nameSeed.Length - 2; j > 0 && i < length; j--)
                     k[i] = (byte)(nameSeed[j] ^ (nameSeed[j] + (i++ ^ 0x1C)));
-                }
             }
         }
 
         return k.AsMemory(0, length);
     }
 
-    private void ChaChaTweakKeyTable(Memory<byte> keyOne)
+    private void Chacha20Crypt(Span<byte> keyOne)
     {
-        byte[] key = new byte[32];
-        byte[] iv = new byte[12];
-
-        if (VersionMajor >= 9)
+        if (_chaCha20Ctx is null)
         {
-            Encoding.ASCII.GetBytes(ConstantKeyV9, key);
-            Encoding.ASCII.GetBytes(ConstantIVV9, iv.AsSpan(4));
-            ChaCha20.sigma = Encoding.ASCII.GetBytes("Ym<q}it&('oU^}t_"); // yeah that was also changed for some reason
+            byte[] key = new byte[32];
+            byte[] iv = new byte[12];
+
+            if (VersionMajor >= 9)
+            {
+                Encoding.ASCII.GetBytes(ConstantKeyV9, key);
+                Encoding.ASCII.GetBytes(ConstantIVV9, iv.AsSpan(4));
+                ChaCha20.sigma = Encoding.ASCII.GetBytes("Ym<q}it&('oU^}t_"); // yeah that was also changed for some reason
+            }
+            else
+            {
+                Encoding.ASCII.GetBytes(ConstantKeyV8, key);
+                Encoding.ASCII.GetBytes(ConstantIVV8, iv.AsSpan(4));
+            }
+
+            _chaCha20Ctx = new ChaCha20(key, iv, 0);
         }
         else
         {
-            Encoding.ASCII.GetBytes(ConstantKeyV8, key);
-            Encoding.ASCII.GetBytes(ConstantIVV8, iv.AsSpan(4));
+            _chaCha20Ctx.ResetCounter();
         }
 
-        _chaCha20Ctx = new ChaCha20(key, iv, 0);
+        _chaCha20Ctx.DecryptBytes(keyOne, keyOne.Length);
 
-        _chaCha20Ctx.DecryptBytes(keyOne.Span, keyOne.Length);
     }
     #endregion
 

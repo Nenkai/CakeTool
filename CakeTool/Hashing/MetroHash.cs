@@ -170,8 +170,7 @@ public class MetroHash
     public static void MetroHashUnkCustomV9_1(Span<byte> key, uint len, uint seed, Span<byte> outHash)
     {
         // Some weird metrohash variant, the constants are unknown.
-        Span<ulong> ulongs = MemoryMarshal.Cast<byte, ulong>(key);
-
+        // TfQcZmWhbM+HhTeQ
         const ulong k0 = 0x63516654;
         const ulong k1 = 0x68576D5A;
         const ulong k2 = 0x482B4D62;

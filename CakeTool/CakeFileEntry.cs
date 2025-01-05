@@ -65,14 +65,27 @@ public class CakeFileEntry
         }
         else if (versionMajor >= 8)
         {
-            // 0x20
-            StringOffset = sr.ReadUInt32();
-            ParentDirIndex = sr.ReadUInt32();
-            CRCChecksum = sr.ReadUInt32();
-            CompressedSize = sr.ReadUInt32();
-            DataOffset = sr.ReadUInt64();
-            ResourceTypeSignature = sr.ReadUInt32();
-            ExpandedSize = sr.ReadUInt32(); // New
+            if (versionMinor == 7)
+            {
+                StringOffset = sr.ReadUInt32();
+                ParentDirIndex = sr.ReadUInt32();
+                CompressedSize = sr.ReadUInt32();
+                DataOffset = sr.ReadUInt64();
+                ResourceTypeSignature = sr.ReadUInt32();
+                ExpandedSize = sr.ReadUInt32();
+                RawBitFlags = sr.ReadByte(); //enc flag? seems to match when it's encrypted. storing to raw bit flags for now.
+            }
+            else
+            {
+                // 0x20
+                StringOffset = sr.ReadUInt32();
+                ParentDirIndex = sr.ReadUInt32();
+                CRCChecksum = sr.ReadUInt32();
+                CompressedSize = sr.ReadUInt32();
+                DataOffset = sr.ReadUInt64();
+                ResourceTypeSignature = sr.ReadUInt32();
+                ExpandedSize = sr.ReadUInt32(); // New
+            }
         }
         else
         {
