@@ -6,7 +6,9 @@ Tool/decryption tool for .cak archives (WIP).
 
 * v6.7
 * v6.8
+* v8.1
 * v8.2
+* v8.3
 * v9.1
 * v9.2
 
