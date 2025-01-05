@@ -574,9 +574,11 @@ public class CakeRegistryFile : IDisposable
     {
         SpanReader sr = new SpanReader(stringTableSection);
 
+        
         if (IsAtLeastVersion(9))
         {
-            uint unk = sr.ReadUInt16();
+            string mainDirMaybe = ReadScrambledString(ref sr);
+            _logger?.LogInformation("Original or Base Dir (?): {mainDir}", !string.IsNullOrEmpty(mainDirMaybe) ? mainDirMaybe : "<none>");
         }
 
         while (!sr.IsEndOfSpan)
