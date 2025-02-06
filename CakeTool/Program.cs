@@ -1,5 +1,7 @@
 ﻿using System.Text;
 
+using CakeTool.GameFiles;
+
 using CommandLine;
 
 using Microsoft.Extensions.Logging;

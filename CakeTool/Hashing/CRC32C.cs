@@ -9,7 +9,7 @@ namespace CakeTool.Hashing;
 
 public class CRC32C
 {
-    public static uint Hash(Span<byte> data)
+    public static uint Hash(ReadOnlySpan<byte> data)
     {
         uint crc = ~0u;
         for (int i = 0; i < data.Length; i++)

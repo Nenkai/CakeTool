@@ -11,7 +11,7 @@ using System.Diagnostics;
 
 using Syroot.BinaryData;
 
-namespace CakeTool;
+namespace CakeTool.GameFiles;
 
 /// <summary>
 /// For .mpb symbol/map files
