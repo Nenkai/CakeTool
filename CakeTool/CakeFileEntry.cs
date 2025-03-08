@@ -45,7 +45,7 @@ public class CakeFileEntry
         set => RawBitFlags |= (byte)((value & 0b11_1111_1111_1111) << 16);
     }
 
-    public List<uint> ChunkSizes = [];
+    public List<uint> ChunkEndOffsets = [];
 
     public void Read(ref SpanReader sr, byte versionMajor, byte versionMinor)
     {
@@ -61,7 +61,7 @@ public class CakeFileEntry
             RawBitFlags = sr.ReadUInt32();
 
             for (int i = 0; i < NumChunks; i++)
-                ChunkSizes.Add(sr.ReadUInt32());
+                ChunkEndOffsets.Add(sr.ReadUInt32());
         }
         else if (versionMajor >= 8)
         {

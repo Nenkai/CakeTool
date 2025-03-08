@@ -322,23 +322,87 @@ public class CakeRegistryFile : IDisposable
             }
             else
             {
-                using FileStream outputStream = File.Create(outputPath);
+                // 9.0 introduced chunked decompression.
+                if (IsAtLeastVersion(9, 0))
+                    ExtractChunked(entry, gamePath, inputBuffer, outputPath);
+                else
+                    ExtractRaw(entry, gamePath, inputBuffer, outputPath);
+            }
+        }
+    }
 
-                if (entry.ExpandedSize != entry.CompressedSize)
+    private void ExtractChunked(CakeFileEntry entry, string gamePath, MemoryOwner<byte> inputBuffer, string outputPath)
+    {
+        using FileStream outputStream = File.Create(outputPath);
+
+        if (entry.ExpandedSize != entry.CompressedSize)
+        {
+            uint chunkOffset = 0;
+            long decOffset = 0;
+
+            const int MAX_DEC_CHUNK_SIZE = 0x100000;
+            using var outputBuffer = MemoryOwner<byte>.Allocate(MAX_DEC_CHUNK_SIZE);
+
+            for (int i = 0; i < entry.NumChunks; i++)
+            {
+                uint chunkSize = entry.ChunkEndOffsets[i] - (i != 0 ? entry.ChunkEndOffsets[i - 1] : 0);
+                Span<byte> chunk = inputBuffer.Span.Slice((int)chunkOffset, (int)chunkSize);
+
+                // There's probably a better way to calculate this.
+                long decSize = Math.Min(decOffset + MAX_DEC_CHUNK_SIZE, entry.ExpandedSize) - decOffset;
+
+                // The last chunk may not be compressed if it's too small to have been worth it.
+                // The game probably detects this better
+                if (decSize != chunkSize)
                 {
-                    using var outputBuffer = MemoryOwner<byte>.Allocate((int)entry.ExpandedSize);
-                    long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), (int)entry.CompressedSize,
-                                                    in MemoryMarshal.GetReference(outputBuffer.Span), entry.ExpandedSize);
-                    if (decoded != entry.ExpandedSize)
+                    long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(chunk),
+                                                    (int)chunkSize,
+                                                    in MemoryMarshal.GetReference(outputBuffer.Span),
+                                                    decSize);
+
+                    if (decoded != decSize)
+                    {
                         _logger?.LogError("ERROR: Failed to decompress oodle data ({file}), skipping!", gamePath);
-                    else
-                        outputStream.Write(outputBuffer.Span);
+                        return;
+                    }
+
+                    outputStream.Write(outputBuffer.Span.Slice(0, (int)decSize));
                 }
                 else
                 {
-                    outputStream.Write(inputBuffer.Span);
+                    outputStream.Write(chunk);
                 }
+
+                decOffset += decSize;
+                chunkOffset += chunkSize;
             }
+
+            if (decOffset != entry.ExpandedSize)
+                _logger?.LogError("ERROR: Failed to decompress oodle data ({file}), skipping!", gamePath);
+        }
+        else
+        {
+            outputStream.Write(inputBuffer.Span);
+        }
+    }
+
+    private void ExtractRaw(CakeFileEntry entry, string gamePath, MemoryOwner<byte> inputBuffer, string outputPath)
+    {
+        using FileStream outputStream = File.Create(outputPath);
+
+        if (entry.ExpandedSize != entry.CompressedSize)
+        {
+            using var outputBuffer = MemoryOwner<byte>.Allocate((int)entry.ExpandedSize);
+            long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), (int)entry.CompressedSize,
+                                            in MemoryMarshal.GetReference(outputBuffer.Span), entry.ExpandedSize);
+            if (decoded != entry.ExpandedSize)
+                _logger?.LogError("ERROR: Failed to decompress oodle data ({file}), skipping!", gamePath);
+            else
+                outputStream.Write(outputBuffer.Span);
+        }
+        else
+        {
+            outputStream.Write(inputBuffer.Span);
         }
     }
 
