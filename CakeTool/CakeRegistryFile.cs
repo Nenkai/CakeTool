@@ -1087,10 +1087,10 @@ public class CakeRegistryFile : IDisposable
             ["bakedfile63"] = 0xAD471170, // Incase
         };
 
-        if (!headerKeys.TryGetValue(FileName, out uint key))
+        if (!headerKeys.TryGetValue(Path.GetFileNameWithoutExtension(FileName), out uint key))
             throw new NotSupportedException($"Could not find header key for cake file '{FileName}'.");
 
-        return headerKeys[Path.GetFileNameWithoutExtension(FileName)];
+        return key;
     }
 
     private Memory<byte> CreateInitialKeyTableFromNameSeed(string nameSeed, int length)
