@@ -780,7 +780,10 @@ public class CakeRegistryFile : IDisposable
             BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x08..], ~(entry.DataOffset ^ MainCryptoKey));
             BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x10..], entry.CompressedSize);
             BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x14..], ~MainCryptoKey);
-            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x18..], BitOperations.Crc32C(0xFFFFFFFF, (uint)~(entry.DataOffset ^ MainCryptoKey)));
+
+            ulong combined = ~(entry.DataOffset ^ MainCryptoKey);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x18..], BitOperations.Crc32C((uint)(combined >> 32), (uint)(combined & 0xFFFFFFFF)));
+
             BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x1C..], BitOperations.Crc32C(~MainCryptoKey, entry.CompressedSize));
 
             ulong fnv1a = 0xCBF29CE484222325;
