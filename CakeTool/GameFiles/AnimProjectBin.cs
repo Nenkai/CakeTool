@@ -13,6 +13,9 @@ namespace CakeTool.GameFiles;
 
 public class AnimProjectBin
 {
+    // Note: May be possible for the game to load the file as XML?
+    // Needs more research
+    
     public List<(ulong, object)> Args = []; // Or constants?
     public List<EventDef> EventDefs = [];
 
