@@ -21,7 +21,6 @@ using CakeTool.PRNG;
 
 using Syroot.BinaryData;
 using Syroot.BinaryData.Memory;
-
 namespace CakeTool;
 
 /// <summary>
@@ -325,7 +324,7 @@ public class CakeRegistryFile : IDisposable
             {
                 using FileStream outputStream = File.Create(outputPath);
 
-                if (entry.ExpandedSize != 0)
+                if (entry.ExpandedSize != entry.CompressedSize)
                 {
                     using var outputBuffer = MemoryOwner<byte>.Allocate((int)entry.ExpandedSize);
                     long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), (int)entry.CompressedSize,
@@ -622,7 +621,8 @@ public class CakeRegistryFile : IDisposable
             return GenerateCryptoKeyV9_1();
         else if (IsVersion(9, 2))
             return GenerateCryptoKeyV9_2();
-        
+        else if (IsVersion(9, 3))
+            return GenerateCryptoKeyV9_3();
         throw new NotSupportedException($"Cake v{VersionMajor}.{VersionMinor} are not yet supported.");
     }
 
@@ -707,6 +707,24 @@ public class CakeRegistryFile : IDisposable
                 val = 0x100000001B3L * (ulong)((sbyte)toHash[i] ^ (long)val);
 
             return (uint)((val & 0xFFFFFFFF) ^ ~(val >> 32)); // We also flip bits of the higher 32.
+        }
+        else if (IsVersion(9, 3))
+        {
+            Span<byte> toHash = stackalloc byte[4 + 4 + 8 + 4 + 4 + 4 + 4];
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x00..], MainCryptoKey);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x04..], ~entry.CompressedSize);
+            BinaryPrimitives.WriteUInt64LittleEndian(toHash[0x08..], ~(entry.DataOffset ^ MainCryptoKey));
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x10..], entry.CompressedSize);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x14..], ~MainCryptoKey);
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x18..], BitOperations.Crc32C(0xFFFFFFFF, (uint)~(entry.DataOffset ^ MainCryptoKey)));
+            BinaryPrimitives.WriteUInt32LittleEndian(toHash[0x1C..], BitOperations.Crc32C(~MainCryptoKey, entry.CompressedSize));
+
+            ulong fnv1a = 0xCBF29CE484222325;
+            for (int i = 0; i < toHash.Length; i++)
+                fnv1a = 0x100000001B3L * (ulong)((sbyte)toHash[i] ^ (long)fnv1a);
+
+            uint final = ScrambleGenSeed(BitConverter.GetBytes(fnv1a));
+            return ~final;
         }
 
         throw new NotSupportedException();
@@ -1043,6 +1061,36 @@ public class CakeRegistryFile : IDisposable
         // Step 11: XOR CRC and SFMT to create final key.
         uint key = crc ^ sfmtRand.Nextuint();
         return key;
+    }
+
+    private uint GenerateCryptoKeyV9_3()
+    {
+        // Step 1: Generate seed
+        string nameSeed = $"{FileName}-{VersionMajor}-{VersionMinor}".ToUpper();
+
+        // TODO.
+        Dictionary<string, uint> headerKeys = new()
+        {
+            ["bakedfile00"] = 0x2A158AB8,
+            ["bakedfile01"] = 0x2A158AB8,
+            ["bakedfile02"] = 0x976D8958,
+            ["bakedfile03"] = 0x976D8958, // Incase
+            ["bakedfile50"] = 0xAE0B193A,
+            ["bakedfile51"] = 0xAE0B193A,
+            ["bakedfile52"] = 0x25ED8EBC,
+            ["bakedfile53"] = 0x25ED8EBC, // Incase
+            ["bakedfile56"] = 0x3B340725,
+            ["bakedfile57"] = 0x3B340725,
+            ["bakedfile60"] = 0x9BF4B101,
+            ["bakedfile61"] = 0x9BF4B101,
+            ["bakedfile62"] = 0xAD471170,
+            ["bakedfile63"] = 0xAD471170, // Incase
+        };
+
+        if (!headerKeys.TryGetValue(FileName, out uint key))
+            throw new NotSupportedException($"Could not find header key for cake file '{FileName}'.");
+
+        return headerKeys[Path.GetFileNameWithoutExtension(FileName)];
     }
 
     private Memory<byte> CreateInitialKeyTableFromNameSeed(string nameSeed, int length)
