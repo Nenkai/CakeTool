@@ -1085,6 +1085,7 @@ public class CakeRegistryFile : IDisposable
             ["bakedfile61"] = 0x9BF4B101,
             ["bakedfile62"] = 0xAD471170,
             ["bakedfile63"] = 0xAD471170, // Incase
+            ["rs"] = 0xEBB165D9,
         };
 
         if (!headerKeys.TryGetValue(Path.GetFileNameWithoutExtension(FileName.ToLower()), out uint key))
