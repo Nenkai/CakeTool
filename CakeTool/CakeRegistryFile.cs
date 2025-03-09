@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using System.Diagnostics;
 
 using Microsoft.Extensions.Logging;
+using Microsoft.IO;
 
 using CommunityToolkit.HighPerformance;
 using CommunityToolkit.HighPerformance.Buffers;
@@ -18,9 +19,11 @@ using CakeTool.Crypto;
 using CakeTool.Hashing;
 using CakeTool.Compression;
 using CakeTool.PRNG;
+using CakeTool.GameFiles.Textures;
 
 using Syroot.BinaryData;
 using Syroot.BinaryData.Memory;
+
 namespace CakeTool;
 
 /// <summary>
@@ -48,6 +51,7 @@ public class CakeRegistryFile : IDisposable
     // v8.2/v8.3 = 22
     // v8.7 = 23
     // v9.1/v9.2 = 24
+    // v9.3 = 25
     public byte VersionMajor { get; set; } 
     public byte VersionMinor { get; set; }
 
@@ -93,13 +97,22 @@ public class CakeRegistryFile : IDisposable
     /// </summary>
     private Dictionary<uint, string> _strings = [];
 
+    /// <summary>
+    /// File stream handle for the cake
+    /// </summary>
     private FileStream _fileStream;
 
     // This is needed for certain cakes that do not have encryption despite their headers marked as such.
     // Game basically correctly checks the header and goes into a function for handling encryption, but they're stubbed in those builds.
     private bool _forceNoEncryption;
+    private bool _noConvertDds;
 
     private ChaCha20 _chaCha20Ctx;
+
+    // For 9.3
+    private TextureDatabase _textureDb;
+
+    private static readonly RecyclableMemoryStreamManager manager = new RecyclableMemoryStreamManager();
 
     // Encryption stuff
     public const string ConstantKeyV9 = "V9w0ooTmKK'{z!mg6b$E%1,s2)nj2o_";
@@ -108,23 +121,26 @@ public class CakeRegistryFile : IDisposable
     public const string ConstantKeyV8 = "r-v4WVyWOprRr7Qw9kN0myq5KCXGaaf";
     public const string ConstantIVV8 = "xTKmfw_";
 
-    private CakeRegistryFile(string fileName, FileStream fs, ILoggerFactory? loggerFactory = null, bool forceNoEncryption = false)
+    private CakeRegistryFile(string fileName, FileStream fs, ILoggerFactory? loggerFactory = null, bool forceNoEncryption = false,
+        bool noConvertDds = false)
     {
         _fileStream = fs;
         FileName = Path.GetFileName(fileName);
         _forceNoEncryption = forceNoEncryption;
+        _noConvertDds = noConvertDds;
 
         if (loggerFactory is not null)
             _logger = loggerFactory.CreateLogger(GetType().ToString());
     }
 
-    public static CakeRegistryFile Open(string file, ILoggerFactory? loggerFactory = null, bool forceNoEncryption = false)
+    public static CakeRegistryFile Open(string file, ILoggerFactory? loggerFactory = null, bool forceNoEncryption = false,
+        bool noConvertDds = false)
     {
         var fs = File.OpenRead(file);
         if (fs.Length < 0x58)
             throw new InvalidDataException("Invalid cake file. Header is too small, corrupted?");
 
-        var cake = new CakeRegistryFile(file, fs, loggerFactory, forceNoEncryption);
+        var cake = new CakeRegistryFile(file, fs, loggerFactory, forceNoEncryption, noConvertDds);
         cake.OpenInternal();
         return cake;
     }
@@ -181,8 +197,23 @@ public class CakeRegistryFile : IDisposable
         foreach (CakeFileEntry? fileEntry in _fileEntries)
         {
             var name = _strings[fileEntry.StringOffset];
-            ExtractEntry(fileEntry, name, outputDir);
+
+            try
+            {
+                ExtractFileData(fileEntry, name, outputDir);
+            }
+            catch (Exception ex)
+            {
+                string gamePath = GetGamePathForEntry(fileEntry);
+                _logger?.LogError(ex, "Failed to extract '{gamePath}'", gamePath);
+            }
         }
+    }
+
+    public bool FileExists(string file)
+    {
+        ulong hash = FNV1A64.FNV64StringI(file);
+        return _fileLookupTable.TryGetValue(hash, out _);
     }
 
     public bool ExtractFile(string file, string outputDir)
@@ -192,10 +223,25 @@ public class CakeRegistryFile : IDisposable
             return false;
 
         CakeFileEntry fileEntry = _fileEntries[(int)lookupEntry.EntryIndex];
-        ExtractEntry(fileEntry, file, outputDir);
+        ExtractFileData(fileEntry, file, outputDir);
         return true;
     }
 
+    public bool ExtractFile(string file, Stream stream)
+    {
+        ulong hash = FNV1A64.FNV64StringI(file);
+        if (!_fileLookupTable.TryGetValue(hash, out CakeEntryLookup? lookupEntry))
+            return false;
+
+        CakeFileEntry fileEntry = _fileEntries[(int)lookupEntry.EntryIndex];
+
+        using RecyclableMemoryStream fileDataStream = manager.GetStream(tag: null, fileEntry.ExpandedSize);
+        ExtractFileData(fileEntry, file, fileDataStream);
+
+        string gamePath = GetGamePathForEntry(fileEntry);
+        PostProcessFileData(fileEntry, fileDataStream, gamePath, stream);
+        return true;
+    }
 
     private void OpenInternal()
     {
@@ -246,6 +292,7 @@ public class CakeRegistryFile : IDisposable
 
         if (!_forceNoEncryption && IsHeaderEncrypted)
         {
+            _logger?.LogInformation("Decrypting header.");
             Span<byte> sectionInfoBytes = sectionHeaderBytes.AsSpan(FILESYS_DIR_HEADER_SIZE,
                 (int)(headerPlusSectionTocSize - FILESYS_DIR_HEADER_SIZE));
 
@@ -269,72 +316,120 @@ public class CakeRegistryFile : IDisposable
                 _logger?.LogInformation("- {file}", Path.Combine(dirName, name));
             }
         }
+
+        OnCakeEntriesLoaded();
+
+        _logger?.LogInformation("Cake initialized.");
     }
 
-    private void ExtractEntry(CakeFileEntry entry, string fileName, string outputDir)
+    /// <summary>
+    /// Post-processing on cake file entries loaded.
+    /// </summary>
+    private void OnCakeEntriesLoaded()
     {
-        string gamePath;
-        if (IsAtLeastVersion(8))
+        if (IsAtLeastVersion(9, 3))
         {
-            CakeDirInfo parentDir = _dirEntries[(int)entry.ParentDirIndex];
-            string dirName = _strings[parentDir.PathStringOffset];
-            gamePath = Path.Combine(dirName, fileName);
-        }
-        else
-            gamePath = fileName; // Old versions has the full path.
+            if (FileExists("_textures.tdb"))
+            {
+                _logger?.LogInformation("Loading texture database from cake.. (_textures.tdb)");
+                using var ms = new MemoryStream();
+                ExtractFile("_textures.tdb", ms);
+                ms.Position = 0;
 
+                _textureDb = new TextureDatabase();
+                _textureDb.Read(ms);
+
+                _logger?.LogInformation("Texture database loaded with {textureCount} entries.", _textureDb.TextureInfos.Count);
+            }
+            else
+            {
+                _logger?.LogInformation("Not loading texture database (_textures.tdb is not present in cake).");
+            }
+        }
+    }
+
+    private void ExtractFileData(CakeFileEntry entry, string fileName, string outputDir)
+    {
+        string gamePath = GetGamePathForEntry(entry);
         string outputPath = Path.Combine(outputDir, gamePath);
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
         _logger?.LogInformation("Extracting: {file}", gamePath);
 
+        using RecyclableMemoryStream fileDataStream = manager.GetStream(tag: null, entry.ExpandedSize);
+        ExtractFileData(entry, fileName, fileDataStream);
+
+        if (entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds && IsAtLeastVersion(9))
+            outputPath = Path.ChangeExtension(outputPath, ".dds");
+
+        using var outputFileStream = File.Create(outputPath);
+        PostProcessFileData(entry, fileDataStream, gamePath, outputFileStream);
+    }
+
+    private void ExtractFileData(CakeFileEntry entry, string fileName, Stream outputStream)
+    {
         if (entry.CompressedSize == 0)
+            return;
+
+        string gamePath = GetGamePathForEntry(entry);
+        _fileStream.Position = (long)entry.DataOffset;
+
+        using var inputBuffer = MemoryOwner<byte>.Allocate((int)entry.CompressedSize);
+        _fileStream.ReadExactly(inputBuffer.Span);
+
+        if ((VersionMajor == 6 && IsFileDataEncrypted) ||
+            ((IsVersion(8, 2) || IsVersion(8, 3)) && IsFileDataEncrypted) ||
+            (IsVersion(8, 7) && entry.RawBitFlags != 0) ||
+            (VersionMajor >= 9 && (entry.UnkBits2 & 1) != 0))
         {
-            File.WriteAllBytes(outputPath, []);
+            uint key = GetFileManglingKey(entry);
+            CryptFileDataAndCheck(inputBuffer.Span, entry, key);
+        }
+
+        if (entry.CompressedSize >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(inputBuffer.Span) == ResourceIds.Resource) // RES!
+        {
+            ExtractResource(fileName, gamePath, inputBuffer, outputStream);
+        }
+        else if (entry.ResourceTypeSignature == ResourceIds.Texture && (IsVersion(9, 1) || IsVersion(9, 2))) // 'TEX!'
+        {
+            // Texture meta is embedded.
+            if (!_noConvertDds)
+                ProcessEmbededTextureResource(entry, gamePath, inputBuffer, outputStream);
+            else
+                outputStream.Write(inputBuffer.Span);
         }
         else
         {
-            _fileStream.Position = (long)entry.DataOffset;
-
-            using var inputBuffer = MemoryOwner<byte>.Allocate((int)entry.CompressedSize);
-            _fileStream.ReadExactly(inputBuffer.Span);
-
-            if ((VersionMajor == 6 && IsFileDataEncrypted) ||
-                ((IsVersion(8, 2) || IsVersion(8, 3)) && IsFileDataEncrypted) ||
-                (IsVersion(8, 7) && entry.RawBitFlags != 0) ||
-                (VersionMajor >= 9 && (entry.UnkBits2 & 1) != 0))
-            {
-                uint key = GetFileManglingKey(entry);
-                CryptFileDataAndCheck(inputBuffer.Span, entry, key);
-            }
-
-            if (entry.CompressedSize >= 4 && BinaryPrimitives.ReadUInt32LittleEndian(inputBuffer.Span) == 0x21534552) // 'RES!' aka resource
-            {
-                ExtractResource(fileName, gamePath, outputPath, inputBuffer);
-            }
-            else if (entry.ResourceTypeSignature == 0x21584554) // 'TEX!'
-            {
-                // TODO: Extract texture into dds. For now just extract the tex raw
-                // ProcessTexture(entry, inputBuffer.Span, outputPath);
-
-                using FileStream outputStream = File.Create(outputPath);
-                outputStream.Write(inputBuffer.Span);
-            }
+            // 9.0 introduced chunked decompression.
+            if (IsAtLeastVersion(9, 0))
+                ExtractChunked(entry, gamePath, inputBuffer, outputStream);
             else
-            {
-                // 9.0 introduced chunked decompression.
-                if (IsAtLeastVersion(9, 0))
-                    ExtractChunked(entry, gamePath, inputBuffer, outputPath);
-                else
-                    ExtractRaw(entry, gamePath, inputBuffer, outputPath);
-            }
+                ExtractRaw(entry, gamePath, inputBuffer, outputStream);
         }
     }
 
-    private void ExtractChunked(CakeFileEntry entry, string gamePath, MemoryOwner<byte> inputBuffer, string outputPath)
+    private void PostProcessFileData(CakeFileEntry entry, Stream fileDataStream, string gamePath, Stream outputStream)
     {
-        using FileStream outputStream = File.Create(outputPath);
+        fileDataStream.Position = 0;
 
+        if (IsAtLeastVersion(9, 3) && entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds)
+        {
+            if (_textureDb.TryGetTexture(gamePath, out TextureMeta texInfo))
+            {
+                _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texInfo.Width, texInfo.Height,
+                     texInfo.Format, texInfo.Type, texInfo.IsSRGB, texInfo.Depth, texInfo.Field_0x01);
+
+                TextureUtils.ConvertToDDS(texInfo, fileDataStream, outputStream);
+            }
+        }
+        else
+        {
+            fileDataStream.CopyTo(outputStream);
+        }
+    }
+
+    private void ExtractChunked(CakeFileEntry entry, string gamePath, MemoryOwner<byte> inputBuffer, Stream outputStream, bool isEmbeddedTextureResource = false)
+    {
         if (entry.ExpandedSize != entry.CompressedSize)
         {
             uint chunkOffset = 0;
@@ -346,6 +441,9 @@ public class CakeRegistryFile : IDisposable
             for (int i = 0; i < entry.NumChunks; i++)
             {
                 uint chunkSize = entry.ChunkEndOffsets[i] - (i != 0 ? entry.ChunkEndOffsets[i - 1] : 0);
+                if (isEmbeddedTextureResource && i == 0)
+                    chunkSize -= 0x28;
+
                 Span<byte> chunk = inputBuffer.Span.Slice((int)chunkOffset, (int)chunkSize);
 
                 // There's probably a better way to calculate this.
@@ -386,10 +484,8 @@ public class CakeRegistryFile : IDisposable
         }
     }
 
-    private void ExtractRaw(CakeFileEntry entry, string gamePath, MemoryOwner<byte> inputBuffer, string outputPath)
+    private void ExtractRaw(CakeFileEntry entry, string gamePath, MemoryOwner<byte> inputBuffer, Stream outputStream)
     {
-        using FileStream outputStream = File.Create(outputPath);
-
         if (entry.ExpandedSize != entry.CompressedSize)
         {
             using var outputBuffer = MemoryOwner<byte>.Allocate((int)entry.ExpandedSize);
@@ -406,9 +502,8 @@ public class CakeRegistryFile : IDisposable
         }
     }
 
-
     // Mostly used in Version 6/8.
-    private void ExtractResource(string fileName, string dirName, string outputPath, MemoryOwner<byte> inputBuffer)
+    private void ExtractResource(string fileName, string dirName, MemoryOwner<byte> inputBuffer, Stream outputStream)
     {
         const int ResourceHeaderSize = 0x18;
 
@@ -420,7 +515,6 @@ public class CakeRegistryFile : IDisposable
         uint compressionType = resReader.ReadUInt32();
         uint decompressedSize = resReader.ReadUInt32();
 
-        using FileStream outputStream = File.Create(outputPath);
         switch (compressionType)
         {
             case 0:
@@ -450,38 +544,47 @@ public class CakeRegistryFile : IDisposable
         }
     }
 
-    private void ProcessTexture(CakeFileEntry fileEntry, Span<byte> data, string outputPath)
+    private void ProcessEmbededTextureResource(CakeFileEntry fileEntry, string gamePath, MemoryOwner<byte> data, Stream outputStream)
     {
-        const int TextureResourceHeaderSize = 0x28;
+        Stream inputStream = data.AsStream();
+        var texInfo = new TextureMeta();
+        texInfo.Read(inputStream);
 
-        SpanReader sr = new SpanReader(data);
-        ushort unk1 = sr.ReadUInt16(); // 1 byte Version? then unknown byte?
-        ushort width = sr.ReadUInt16();
-        ushort height = sr.ReadUInt16();
-        sr.ReadUInt16();
-        ulong unkHash1 = sr.ReadUInt64();
-        ulong empty = sr.ReadUInt64();
-        uint decompressedSize = sr.ReadUInt32();
-        uint unk = sr.ReadUInt32();
+        int currentOffset = (int)inputStream.Position;
 
-        // Not sure which is the pixel format.
+        MemoryOwner<byte> compressed = data[currentOffset..];
+        int compressedSize = data.Length - currentOffset;
 
-        // 4 = BC5/DXT5
-        // 6 = BC7
-        byte unkByte = sr.ReadByte();
+        _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texInfo.Width, texInfo.Height,
+                 texInfo.Format, texInfo.Type, texInfo.IsSRGB, texInfo.Depth, texInfo.Field_0x01);
 
-        byte numMips = sr.ReadByte();
-        sr.ReadInt16();
+        if (fileEntry.ExpandedSize != compressedSize)
+        {
+            using RecyclableMemoryStream decompressedImageDataStream = manager.GetStream(tag: null, fileEntry.ExpandedSize);
+            ExtractChunked(fileEntry, gamePath, compressed, decompressedImageDataStream, true);
 
-        // 4 = BC5/DXT5
-        // 6 = BC7
-        uint formatMaybe2 = sr.ReadUInt32();
+            TextureUtils.ConvertToDDS(texInfo, decompressedImageDataStream, outputStream);
+        }
+        else
+        {
+            TextureUtils.ConvertToDDS(texInfo, compressed.AsStream(), outputStream);
+        }
+    }
 
-        using FileStream outputStream = File.Create(outputPath);
-        using var outputBuffer = MemoryOwner<byte>.Allocate((int)decompressedSize);
+    public string GetGamePathForEntry(CakeFileEntry entry)
+    {
+        string gamePath;
+        if (IsAtLeastVersion(8))
+        {
+            CakeDirInfo parentDir = _dirEntries[(int)entry.ParentDirIndex];
+            string dirName = _strings[parentDir.PathStringOffset];
+            string fileName = _strings[entry.StringOffset];
+            gamePath = Path.Combine(dirName, fileName);
+        }
+        else
+            gamePath = _strings[entry.StringOffset]; // Old versions has the full path.
 
-        long pixelData = Oodle.Decompress(in MemoryMarshal.GetReference(data.Slice(TextureResourceHeaderSize)), data.Length - TextureResourceHeaderSize,
-                                          in MemoryMarshal.GetReference(outputBuffer.Span), decompressedSize);
+        return gamePath;
     }
 
     #region Private
@@ -536,9 +639,13 @@ public class CakeRegistryFile : IDisposable
 
         if (!_forceNoEncryption && IsHeaderEncrypted)
         {
+            _logger?.LogInformation("Decrypting file LUT section.");
+
             uint crc = CryptHeaderData(sectionData, MainCryptoKey);
             if (crc != _sections[FILE_LOOKUP_TABLE_SECTION_INDEX].Checksum)
                 throw new InvalidCastException("File lookup section checksum did not match. Invalid or corrupted?");
+
+            _logger?.LogInformation("File LUT section checksum OK.");
         }
 
         SpanReader sectionReader = new SpanReader(sectionData);
@@ -558,9 +665,13 @@ public class CakeRegistryFile : IDisposable
 
         if (!_forceNoEncryption && IsHeaderEncrypted)
         {
+            _logger?.LogInformation("Decrypting dir entries section.");
+
             uint crc = CryptHeaderData(sectionData, MainCryptoKey);
             if (crc != _sections[DIR_INFO_TABLE_SECTION_INDEX].Checksum)
                 throw new InvalidCastException("Dir entries section checksum did not match. Invalid or corrupted?");
+
+            _logger?.LogInformation("Dir entries section checksum OK.");
         }
 
         SpanReader sectionReader = new SpanReader(sectionData);
@@ -580,9 +691,13 @@ public class CakeRegistryFile : IDisposable
 
         if (!_forceNoEncryption && IsHeaderEncrypted)
         {
+            _logger?.LogInformation("Decrypting dir section.");
+
             uint crc = CryptHeaderData(sectionData, MainCryptoKey);
             if (crc != _sections[DIR_LOOKUP_TABLE_SECTION_INDEX].Checksum)
                 throw new InvalidCastException("Dir section checksum did not match. Invalid or corrupted?");
+
+            _logger?.LogInformation("Dir section checksum OK.");
         }
 
         SpanReader srr = new SpanReader(sectionData);
@@ -602,9 +717,13 @@ public class CakeRegistryFile : IDisposable
 
         if (!_forceNoEncryption && IsHeaderEncrypted)
         {
+            _logger?.LogInformation("Decrpyting file entries section.");
+
             uint crc = CryptHeaderData(entries, MainCryptoKey);
             if (crc != _sections[FILE_INFO_TABLE_SECTION_INDEX].Checksum)
                 throw new InvalidCastException("File info section checksum did not match. Invalid or corrupted?");
+
+            _logger?.LogInformation("File entries section checksum OK.");
         }
 
         SpanReader entriesReader = new SpanReader(entries);
@@ -625,9 +744,13 @@ public class CakeRegistryFile : IDisposable
 
         if (!_forceNoEncryption && IsHeaderEncrypted)
         {
+            _logger?.LogInformation("Decrpyting string table section.");
+
             uint crc = CryptHeaderData(stringTableSection, MainCryptoKey);
             if (crc != _sections[STRING_TABLE_SECTION_INDEX].Checksum)
                 throw new InvalidCastException("String table checksum did not match. Invalid or corrupted?");
+
+            _logger?.LogInformation("String table section checksum OK.");
         }
 
         ReadStringEntries(stringTableSection);

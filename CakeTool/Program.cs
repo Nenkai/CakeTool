@@ -1,6 +1,8 @@
 ﻿using System.Text;
+using System.Text.Json;
 
 using CakeTool.GameFiles;
+using CakeTool.GameFiles.Textures;
 
 using CommandLine;
 
@@ -31,10 +33,11 @@ public class Program
         Console.WriteLine("-----------------------------------------");
         Console.WriteLine("");
 
-        var p = Parser.Default.ParseArguments<UnpackCakeVerbs, UnpackFileVerbs, MpbToTxtVerbs>(args)
+        var p = Parser.Default.ParseArguments<UnpackCakeVerbs, UnpackFileVerbs, MpbToTxtVerbs, TdbDumpVerbs>(args)
             .WithParsed<UnpackCakeVerbs>(UnpackCake)
             .WithParsed<UnpackFileVerbs>(UnpackFile)
-            .WithParsed<MpbToTxtVerbs>(MpbToTxt);
+            .WithParsed<MpbToTxtVerbs>(MpbToTxt)
+            .WithParsed<TdbDumpVerbs>(TdbDump);
     }
 
     static void UnpackFile(UnpackFileVerbs verbs)
@@ -125,12 +128,39 @@ public class Program
             _logger.LogCritical(ex, "Failed to unpack.");
         }
     }
+
+    static void TdbDump(TdbDumpVerbs verbs)
+    {
+        if (!File.Exists(verbs.InputFile))
+        {
+            _logger.LogError("File '{path}' does not exist", verbs.InputFile);
+            return;
+        }
+
+        try
+        {
+            var tdb = TextureDatabase.Open(verbs.InputFile);
+
+            using var outputStream = File.Create(Path.ChangeExtension(verbs.InputFile, ".json"));
+            JsonSerializer.Serialize(outputStream, tdb.TextureInfos, new JsonSerializerOptions()
+            {
+                WriteIndented = true,
+            });
+
+            _logger.LogInformation("Done.");
+
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "Failed to unpack.");
+        }
+    }
 }
 
 [Verb("unpack-file", HelpText = "Unpacks a specific file from a cake (.cak) archive.")]
 public class UnpackFileVerbs
 {
-    [Option('i', "input", Required = true, HelpText = "Input .cak file")]
+    [Option('i', "input", Required = true, HelpText = "Input .cak file. IMPORTANT: MAKE SURE THE CAKE FILE NAME HAS NOT BEEN CHANGED.")]
     public string InputFile { get; set; }
 
     [Option('f', "file", Required = true, HelpText = "File to unpack.")]
@@ -141,12 +171,15 @@ public class UnpackFileVerbs
 
     [Option("force-no-encryption", HelpText = "Forces no encryption use. Use this for 2K21 Beta where archives are not encrypted (but no flag is specified to determine it).")]
     public bool ForceNoEncryption { get; set; } = false;
+
+    [Option("no-convert-dds", HelpText = "Whether not to autoconvert .tex to .dds (when supported).")]
+    public bool NoConvertDds { get; set; } = false;
 }
 
 [Verb("unpack-cak", HelpText = "Unpacks all files from a cake (.cak) archive.")]
 public class UnpackCakeVerbs
 {
-    [Option('i', "input", Required = true, HelpText = "Input .cak file")]
+    [Option('i', "input", Required = true, HelpText = "Input .cak file. IMPORTANT: MAKE SURE THE CAKE FILE NAME HAS NOT BEEN CHANGED.")]
     public string InputFile { get; set; }
 
     [Option('o', "output", HelpText = "Output directory. Optional, defaults to a folder named the same as the cake (.cak) file.")]
@@ -154,11 +187,21 @@ public class UnpackCakeVerbs
 
     [Option("force-no-encryption", HelpText = "Forces no encryption use. Use this for 2K21 Beta where archives are not encrypted (but no flag is specified to determine it).")]
     public bool ForceNoEncryption { get; set; } = false;
+
+    [Option("no-convert-dds", HelpText = "Whether not to autoconvert .tex files to .dds (when supported).")]
+    public bool NoConvertDds { get; set; } = false;
 }
 
 [Verb("mpb-to-txt", HelpText = "Mpb symbol map to text")]
 public class MpbToTxtVerbs
 {
     [Option('i', "input", Required = true, HelpText = "Input .mpb file")]
+    public string InputFile { get; set; }
+}
+
+[Verb("tdb-dump", HelpText = "Dump tdb (texture database) file to json.")]
+public class TdbDumpVerbs
+{
+    [Option('i', "input", Required = true, HelpText = "Input .tdb file")]
     public string InputFile { get; set; }
 }
