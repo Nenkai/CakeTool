@@ -10,6 +10,7 @@ namespace CakeTool.GameFiles.Textures;
 
 public class TextureMeta
 {
+    // v9 = 20
     // v10 = 22
     // v11 = 23
     // v13 = 24
@@ -56,7 +57,7 @@ public class TextureMeta
         var bs = stream is BinaryStream ? (BinaryStream)stream : new BinaryStream(stream);
         Version = bs.Read1Byte();
 
-        if (Version == 10 || Version == 11)
+        if (Version == 9 || Version == 10 || Version == 11)
         {
             bs.Position += 3;
             Width = bs.ReadUInt16();
@@ -72,6 +73,24 @@ public class TextureMeta
             Type = TextureUtils.TypeHashToType[bs.ReadUInt32()];
             IsSRGB = bs.ReadBoolean();
 
+            if (Version == 9)
+            {
+                bs.Read1Byte();
+                bs.Read1Byte();
+                bs.Read1Byte();
+                DecompressedFileSize = bs.ReadUInt32();
+                uint crunch = bs.ReadUInt32(); // "CRN!"
+
+                // TODO: Support crunch.
+                // Game can use https://github.com/BinomialLLC/crunch for bc compression
+                // Maybe expand over https://github.com/jacano/ManagedCrunch ?
+                // Or reuse AssetRipper implementation
+                // https://github.com/AssetRipper/AssetRipper/blob/8435c391bd4db44f6d53aa00515258d2b68f7dda/Source/AssetRipper.Export.Modules.Textures/
+
+                // Relevant calls:
+                // crnd::crn_unpacker::init
+                // crnd::crn_unpacker::unpack_level
+            }
             if (Version == 10)
             {
                 bs.Align(0x04);
@@ -89,7 +108,7 @@ public class TextureMeta
                     CompressedFileSize = bs.ReadUInt32();
             }
         }
-        else
+        else if (Version >= 13)
         {
             Field_0x01 = bs.Read1Byte();
             Width = bs.ReadUInt16();
