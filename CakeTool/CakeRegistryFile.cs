@@ -1302,16 +1302,28 @@ public class CakeRegistryFile : IDisposable
             ["bakedfile01"] = 0x2A158AB8,
             ["bakedfile02"] = 0x976D8958,
             ["bakedfile03"] = 0x976D8958, // Incase
+            ["bakedfile04"] = 0x05C2BD3B, // Incase
+            ["bakedfile05"] = 0x05C2BD3B, // Incase
             ["bakedfile50"] = 0xAE0B193A,
             ["bakedfile51"] = 0xAE0B193A,
             ["bakedfile52"] = 0x25ED8EBC,
             ["bakedfile53"] = 0x25ED8EBC, // Incase
+            ["bakedfile54"] = 0x4C2720F0, // Incase
+            ["bakedfile55"] = 0x4C2720F0, // Incase
             ["bakedfile56"] = 0x3B340725,
             ["bakedfile57"] = 0x3B340725,
             ["bakedfile60"] = 0x9BF4B101,
             ["bakedfile61"] = 0x9BF4B101,
             ["bakedfile62"] = 0xAD471170,
-            ["bakedfile63"] = 0xAD471170, // Incase
+            ["bakedfile63"] = 0xAD471170,
+            ["bakedfile80"] = 0xA8BA23F9, // Incase
+            ["bakedfile81"] = 0xA8BA23F9,
+            ["bakedfile90"] = 0x13FFB345, // Incase
+            ["bakedfile91"] = 0x13FFB345,
+            ["bakedfile100"] = 0x1B6082C8, // Incase
+            ["bakedfile101"] = 0x1B6082C8,
+            ["bakedfile110"] = 0x1B6082C8, // Incase
+            ["bakedfile111"] = 0x1B6082C8, // Incase
             ["rs"] = 0xEBB165D9,
         };
 
