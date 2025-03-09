@@ -172,7 +172,7 @@ public class UnpackFileVerbs
     [Option("force-no-encryption", HelpText = "Forces no encryption use. Use this for 2K21 Beta where archives are not encrypted (but no flag is specified to determine it).")]
     public bool ForceNoEncryption { get; set; } = false;
 
-    [Option("no-convert-dds", HelpText = "Whether not to autoconvert .tex to .dds (when supported).")]
+    [Option("no-convert-dds", HelpText = "Whether skip autoconverting .tex files to .dds altogether (when supported).")]
     public bool NoConvertDds { get; set; } = false;
 }
 
@@ -188,7 +188,7 @@ public class UnpackCakeVerbs
     [Option("force-no-encryption", HelpText = "Forces no encryption use. Use this for 2K21 Beta where archives are not encrypted (but no flag is specified to determine it).")]
     public bool ForceNoEncryption { get; set; } = false;
 
-    [Option("no-convert-dds", HelpText = "Whether not to autoconvert .tex files to .dds (when supported).")]
+    [Option("no-convert-dds", HelpText = "Whether skip autoconverting .tex files to .dds altogether (when supported).")]
     public bool NoConvertDds { get; set; } = false;
 }
 

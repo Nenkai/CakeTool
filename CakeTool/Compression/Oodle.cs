@@ -30,7 +30,7 @@ public partial class Oodle
     /// <param name="input">Input Compressed Data</param>
     /// <param name="decompressedLength">Decompressed Size</param>
     /// <returns>Resulting Array if success, otherwise null.</returns>
-    public static long Decompress(in byte input, int inputLength, in byte output, long decompressedLength)
+    public static long Decompress(in byte input, long inputLength, in byte output, long decompressedLength)
     {
         // Decode the data (other parameters such as callbacks not required)
         return OodleLZ_Decompress(input, inputLength, output, decompressedLength, 1, 0, 0, 0, 0, 0, 0, 0, 0, 3);

@@ -327,7 +327,7 @@ public class CakeRegistryFile : IDisposable
     /// </summary>
     private void OnCakeEntriesLoaded()
     {
-        if (IsAtLeastVersion(9, 3))
+        if (IsAtLeastVersion(9, 3) && !_noConvertDds)
         {
             if (FileExists("_textures.tdb"))
             {
@@ -359,7 +359,7 @@ public class CakeRegistryFile : IDisposable
         using RecyclableMemoryStream fileDataStream = manager.GetStream(tag: null, entry.ExpandedSize);
         ExtractFileData(entry, fileName, fileDataStream);
 
-        if (entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds && IsAtLeastVersion(9))
+        if (entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds && IsAtLeastVersion(8, 1))
             outputPath = Path.ChangeExtension(outputPath, ".dds");
 
         using var outputFileStream = File.Create(outputPath);
@@ -390,19 +390,16 @@ public class CakeRegistryFile : IDisposable
         {
             ExtractResource(fileName, gamePath, inputBuffer, outputStream);
         }
-        else if (entry.ResourceTypeSignature == ResourceIds.Texture && (IsVersion(9, 1) || IsVersion(9, 2))) // 'TEX!'
+        else if (entry.ResourceTypeSignature == ResourceIds.Texture && IsVersion(9, 1) || IsVersion(9, 2))
         {
-            // Texture meta is embedded.
-            if (!_noConvertDds)
-                ProcessEmbededTextureResource(entry, gamePath, inputBuffer, outputStream);
-            else
-                outputStream.Write(inputBuffer.Span);
+            // Will need to be post-processed in PostProcessFileData. File contains texture meta & compressed data
+            outputStream.Write(inputBuffer.Span);
         }
         else
         {
             // 9.0 introduced chunked decompression.
             if (IsAtLeastVersion(9, 0))
-                ExtractChunked(entry, gamePath, inputBuffer, outputStream);
+                ExtractChunked(entry, gamePath, inputBuffer.Span, outputStream);
             else
                 ExtractRaw(entry, gamePath, inputBuffer, outputStream);
         }
@@ -412,23 +409,62 @@ public class CakeRegistryFile : IDisposable
     {
         fileDataStream.Position = 0;
 
-        if (IsAtLeastVersion(9, 3) && entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds)
+        if (entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds)
         {
-            if (_textureDb.TryGetTexture(gamePath, out TextureMeta texInfo))
+            if (IsAtLeastVersion(9, 3)) // 9.3's tex only store image data. We need to refer to the .tdb file for conversion.
             {
-                _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texInfo.Width, texInfo.Height,
-                     texInfo.Format, texInfo.Type, texInfo.IsSRGB, texInfo.Depth, texInfo.Field_0x01);
+                if (_textureDb.TryGetTexture(gamePath, out TextureMeta texInfo))
+                {
+                    _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texInfo.Width, texInfo.Height,
+                         texInfo.Format, texInfo.Type, texInfo.IsSRGB, texInfo.Depth, texInfo.Field_0x01);
 
-                TextureUtils.ConvertToDDS(texInfo, fileDataStream, outputStream);
+                    TextureUtils.ConvertToDDS(texInfo, fileDataStream, outputStream);
+                    return;
+                }
+            }
+            else if (IsVersion(9, 1) || IsVersion(9, 2)) // 9.1 & 9.2 stores the metadata before the compressed data.
+            {
+                // Texture meta is embedded.
+                ProcessEmbededTextureResource(entry, gamePath, fileDataStream, outputStream);
+                return;
+            }
+            else if (fileDataStream.Length >= 4 && IsAtLeastVersion(8, 1)) // Earlier tex actually has metadata in them. Check for file's TEX! magic for conversion.
+            {
+                uint magic = fileDataStream.ReadUInt32();
+                if (magic == ResourceIds.Texture)
+                {
+                    var texInfo = new TextureMeta();
+                    texInfo.Read(fileDataStream);
+
+                    _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texInfo.Width, texInfo.Height,
+                         texInfo.Format, texInfo.Type, texInfo.IsSRGB, texInfo.Depth, texInfo.Field_0x01);
+
+                    // V11 (23) in particular can be compressed in-place
+                    if (texInfo.Version == 11 && texInfo.IsCompressed)
+                    {
+                        using var inputBuffer = MemoryOwner<byte>.Allocate((int)texInfo.CompressedFileSize);
+                        fileDataStream.ReadExactly(inputBuffer.Span);
+
+                        using var outputBuffer = MemoryOwner<byte>.Allocate((int)texInfo.DecompressedFileSize);
+                        long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), texInfo.CompressedFileSize,
+                                                        in MemoryMarshal.GetReference(outputBuffer.Span), texInfo.DecompressedFileSize);
+
+                        TextureUtils.ConvertToDDS(texInfo, outputBuffer.AsStream(), outputStream);
+                    }
+                    else
+                    {
+                        TextureUtils.ConvertToDDS(texInfo, fileDataStream, outputStream);
+                    }
+                    return;
+                }
             }
         }
-        else
-        {
-            fileDataStream.CopyTo(outputStream);
-        }
+
+        fileDataStream.Position = 0;
+        fileDataStream.CopyTo(outputStream);
     }
 
-    private void ExtractChunked(CakeFileEntry entry, string gamePath, MemoryOwner<byte> inputBuffer, Stream outputStream, bool isEmbeddedTextureResource = false)
+    private void ExtractChunked(CakeFileEntry entry, string gamePath, Span<byte> inputBuffer, Stream outputStream, bool isEmbeddedTextureResource = false)
     {
         if (entry.ExpandedSize != entry.CompressedSize)
         {
@@ -444,7 +480,7 @@ public class CakeRegistryFile : IDisposable
                 if (isEmbeddedTextureResource && i == 0)
                     chunkSize -= 0x28;
 
-                Span<byte> chunk = inputBuffer.Span.Slice((int)chunkOffset, (int)chunkSize);
+                Span<byte> chunk = inputBuffer.Slice((int)chunkOffset, (int)chunkSize);
 
                 // There's probably a better way to calculate this.
                 long decSize = Math.Min(decOffset + MAX_DEC_CHUNK_SIZE, entry.ExpandedSize) - decOffset;
@@ -454,7 +490,7 @@ public class CakeRegistryFile : IDisposable
                 if (decSize != chunkSize)
                 {
                     long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(chunk),
-                                                    (int)chunkSize,
+                                                    chunkSize,
                                                     in MemoryMarshal.GetReference(outputBuffer.Span),
                                                     decSize);
 
@@ -480,7 +516,7 @@ public class CakeRegistryFile : IDisposable
         }
         else
         {
-            outputStream.Write(inputBuffer.Span);
+            outputStream.Write(inputBuffer);
         }
     }
 
@@ -489,7 +525,7 @@ public class CakeRegistryFile : IDisposable
         if (entry.ExpandedSize != entry.CompressedSize)
         {
             using var outputBuffer = MemoryOwner<byte>.Allocate((int)entry.ExpandedSize);
-            long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), (int)entry.CompressedSize,
+            long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), entry.CompressedSize,
                                             in MemoryMarshal.GetReference(outputBuffer.Span), entry.ExpandedSize);
             if (decoded != entry.ExpandedSize)
                 _logger?.LogError("ERROR: Failed to decompress oodle data ({file}), skipping!", gamePath);
@@ -530,7 +566,7 @@ public class CakeRegistryFile : IDisposable
                     ReadOnlySpan<byte> resourceData = inputBuffer.Span.Slice(ResourceHeaderSize, (int)compressedSize);
 
                     using var outputBuffer = MemoryOwner<byte>.Allocate((int)decompressedSize);
-                    long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(resourceData), (int)compressedSize,
+                    long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(resourceData), compressedSize,
                                                     in MemoryMarshal.GetReference(outputBuffer.Span), decompressedSize);
                     if (decoded != decompressedSize)
                         _logger?.LogError("ERROR: Failed to decompress oodle data ({file}), skipping!", Path.Combine(dirName, fileName));
@@ -544,30 +580,31 @@ public class CakeRegistryFile : IDisposable
         }
     }
 
-    private void ProcessEmbededTextureResource(CakeFileEntry fileEntry, string gamePath, MemoryOwner<byte> data, Stream outputStream)
+    private void ProcessEmbededTextureResource(CakeFileEntry fileEntry, string gamePath, Stream fileDataStream, Stream outputStream)
     {
-        Stream inputStream = data.AsStream();
-        var texInfo = new TextureMeta();
-        texInfo.Read(inputStream);
+        var texMeta = new TextureMeta();
+        texMeta.Read(fileDataStream);
 
-        int currentOffset = (int)inputStream.Position;
+        int currentOffset = (int)fileDataStream.Position;
 
-        MemoryOwner<byte> compressed = data[currentOffset..];
-        int compressedSize = data.Length - currentOffset;
+        int compressedSize = (int)(fileDataStream.Length - currentOffset);
 
-        _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texInfo.Width, texInfo.Height,
-                 texInfo.Format, texInfo.Type, texInfo.IsSRGB, texInfo.Depth, texInfo.Field_0x01);
+        _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texMeta.Width, texMeta.Height,
+                 texMeta.Format, texMeta.Type, texMeta.IsSRGB, texMeta.Depth, texMeta.Field_0x01);
 
         if (fileEntry.ExpandedSize != compressedSize)
         {
+            byte[] compressed = fileDataStream.ReadBytes((int)fileEntry.CompressedSize - currentOffset);
+
             using RecyclableMemoryStream decompressedImageDataStream = manager.GetStream(tag: null, fileEntry.ExpandedSize);
             ExtractChunked(fileEntry, gamePath, compressed, decompressedImageDataStream, true);
 
-            TextureUtils.ConvertToDDS(texInfo, decompressedImageDataStream, outputStream);
+            decompressedImageDataStream.Position = 0;
+            TextureUtils.ConvertToDDS(texMeta, decompressedImageDataStream, outputStream);
         }
         else
         {
-            TextureUtils.ConvertToDDS(texInfo, compressed.AsStream(), outputStream);
+            TextureUtils.ConvertToDDS(texMeta, fileDataStream, outputStream);
         }
     }
 

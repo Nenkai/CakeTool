@@ -67,7 +67,6 @@ public class DdsHeader
             bs.WriteInt32(0); // miscFlags2
         }
 
-        imageDataStream.Position = 0;
         imageDataStream.CopyTo(outStream);
     }
 }
