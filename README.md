@@ -12,6 +12,7 @@ Tool/decryption tool for .cak archives (WIP).
 * v8.7
 * v9.1
 * v9.2
+* v9.3
 
 This repo is only provided for reference/documentation. No support will be provided.
 
