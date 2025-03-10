@@ -49,7 +49,7 @@ public class CakeFileEntry
         set => RawBitFlags |= (byte)((value & 0b11_1111_1111_1111) << 16);
     }
 
-    public List<uint> ChunkEndOffsets = [];
+    public List<uint> ChunkEndOffsets { get; set; } = [];
 
     // For building. Do not use
     public uint FileEntryIndex { get; set; }
@@ -85,7 +85,7 @@ public class CakeFileEntry
                 ExpandedSize = sr.ReadUInt32();
                 RawBitFlags = sr.ReadByte(); //enc flag? seems to match when it's encrypted. storing to raw bit flags for now.
             }
-            else
+            else // if older
             {
                 // 0x20
                 StringOffset = sr.ReadUInt32();

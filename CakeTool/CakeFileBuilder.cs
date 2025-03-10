@@ -89,6 +89,8 @@ public class CakeFileBuilder
                     FileName = Path.GetFileName(relativeSubEntryPath),
                     RelativePath = relativeSubEntryPath,
                     LocalPath = fileSysPath,
+                    NumChunks = 1,
+                    ChunkEndOffsets = [(uint)info.Length],
                 };
 
                 if (ResourceIds.ExtensionToResourceId.TryGetValue(fileSysPath, out var resourceId))
