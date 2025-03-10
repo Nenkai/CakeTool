@@ -84,7 +84,6 @@ public class CakeFileBuilder
                 var fileEntry = new CakeFileEntry()
                 {
                     CompressedSize = (uint)info.Length,
-                    ExpandedSize = (uint)info.Length,
                     CRCChecksum = 0,
                     ParentDirIndex = dirEntry.DirIndex,
                     FileName = Path.GetFileName(relativeSubEntryPath),
@@ -93,7 +92,10 @@ public class CakeFileBuilder
                 };
 
                 if (ResourceIds.ExtensionToResourceId.TryGetValue(fileSysPath, out var resourceId))
+                {
                     fileEntry.ResourceTypeSignature = resourceId;
+                    fileEntry.UnkFlags3 = 0x400;
+                }
 
                 _files.Add(fileEntry);
                 fileEntry.FileEntryIndex = (uint)(_files.Count - 1);
