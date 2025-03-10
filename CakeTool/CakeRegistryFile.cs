@@ -23,6 +23,7 @@ using CakeTool.GameFiles.Textures;
 
 using Syroot.BinaryData;
 using Syroot.BinaryData.Memory;
+using System.Text.Json;
 
 namespace CakeTool;
 
@@ -143,19 +144,6 @@ public class CakeRegistryFile : IDisposable
         var cake = new CakeRegistryFile(file, fs, loggerFactory, forceNoEncryption, noConvertDds);
         cake.OpenInternal();
         return cake;
-    }
-
-    private bool IsVersion(byte versionMajor, byte versionMinor)
-    {
-        return VersionMajor == versionMajor && VersionMinor == versionMinor;
-    }
-
-    private bool IsAtLeastVersion(byte versionMajor, byte versionMinor = 0)
-    {
-        if (VersionMajor < versionMajor)
-            return false;
-
-        return VersionMajor > versionMajor || (VersionMajor == versionMajor && VersionMinor >= versionMinor);
     }
 
     public uint GetHeaderAndSectionInfoSize()
@@ -279,7 +267,9 @@ public class CakeRegistryFile : IDisposable
 
         _logger?.LogInformation("Type: {type} ({typeNumber})", TypeOrParam, (int)TypeOrParam);
 
-        MainCryptoKey = GenerateCryptoXorKey();
+        if (IsHeaderEncrypted)
+            MainCryptoKey = GenerateCryptoXorKey();
+
         _logger?.LogInformation("Crypto Key: {key:X8}", MainCryptoKey);
 
         uint headerPlusSectionTocSize = GetHeaderAndSectionInfoSize();
@@ -380,7 +370,7 @@ public class CakeRegistryFile : IDisposable
         if ((VersionMajor == 6 && IsFileDataEncrypted) ||
             ((IsVersion(8, 2) || IsVersion(8, 3)) && IsFileDataEncrypted) ||
             (IsVersion(8, 7) && entry.RawBitFlags != 0) ||
-            (VersionMajor >= 9 && (entry.UnkBits2 & 1) != 0))
+            (VersionMajor >= 9 && (entry.UnkBits2EncryptedMaybe & 1) != 0))
         {
             uint key = GetFileManglingKey(entry);
             CryptFileDataAndCheck(inputBuffer.Span, entry, key);
@@ -806,7 +796,6 @@ public class CakeRegistryFile : IDisposable
     {
         SpanReader sr = new SpanReader(stringTableSection);
 
-        
         if (IsAtLeastVersion(9))
         {
             string mainDirMaybe = ReadScrambledString(ref sr);
@@ -823,7 +812,10 @@ public class CakeRegistryFile : IDisposable
                 if (!_forceNoEncryption && IsHeaderEncrypted)
                     str = ReadScrambledString(ref sr);
                 else
+                {
                     str = sr.ReadString1();
+                    sr.ReadByte(); // zero termination
+                }
             }
             else
                 str = sr.ReadString0();
@@ -872,11 +864,11 @@ public class CakeRegistryFile : IDisposable
 
         if (IsVersion(8, 3))
         {
-            RotateCrypt(bytes, key);
+            RotateCrypt(bytes.AsSpan(0, bytes.Length - 1), key);
         }
         else // v6, >=8.7
         {
-            ScrambleBytes(bytes, key);
+            ScrambleBytes(bytes.AsSpan(0, bytes.Length - 1), key);
         }
 
         return Encoding.ASCII.GetString(bytes.AsSpan(0, bytes.Length - 1));
@@ -1449,6 +1441,19 @@ public class CakeRegistryFile : IDisposable
 
     }
     #endregion
+
+    private bool IsVersion(byte versionMajor, byte versionMinor)
+    {
+        return VersionMajor == versionMajor && VersionMinor == versionMinor;
+    }
+
+    private bool IsAtLeastVersion(byte versionMajor, byte versionMinor = 0)
+    {
+        if (VersionMajor < versionMajor)
+            return false;
+
+        return VersionMajor > versionMajor || (VersionMajor == versionMajor && VersionMinor >= versionMinor);
+    }
 
     public void Dispose()
     {

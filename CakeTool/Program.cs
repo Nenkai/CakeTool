@@ -33,9 +33,10 @@ public class Program
         Console.WriteLine("-----------------------------------------");
         Console.WriteLine("");
 
-        var p = Parser.Default.ParseArguments<UnpackCakeVerbs, UnpackFileVerbs, MpbToTxtVerbs, TdbDumpVerbs>(args)
+        var p = Parser.Default.ParseArguments<UnpackCakeVerbs, UnpackFileVerbs, PackCakeVerbs, MpbToTxtVerbs, TdbDumpVerbs>(args)
             .WithParsed<UnpackCakeVerbs>(UnpackCake)
             .WithParsed<UnpackFileVerbs>(UnpackFile)
+            .WithParsed<PackCakeVerbs>(PackCake)
             .WithParsed<MpbToTxtVerbs>(MpbToTxt)
             .WithParsed<TdbDumpVerbs>(TdbDump);
     }
@@ -129,6 +130,27 @@ public class Program
         }
     }
 
+    static void PackCake(PackCakeVerbs verbs)
+    {
+        if (!Directory.Exists(verbs.InputDirectory))
+        {
+            _logger.LogError("Directory '{path}' does not exist", verbs.InputDirectory);
+            return;
+        }
+
+        try
+        {
+            var builder = new CakeFileBuilder(_loggerFactory);
+            builder.RegisterFiles(verbs.InputDirectory);
+            builder.Write("test.cak");
+
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "Failed to unpack.");
+        }
+    }
+
     static void TdbDump(TdbDumpVerbs verbs)
     {
         if (!File.Exists(verbs.InputFile))
@@ -204,4 +226,11 @@ public class TdbDumpVerbs
 {
     [Option('i', "input", Required = true, HelpText = "Input .tdb file")]
     public string InputFile { get; set; }
+}
+
+[Verb("pack", HelpText = "Pack to a cake.")]
+public class PackCakeVerbs
+{
+    [Option('i', "input", Required = true, HelpText = "Input directory")]
+    public string InputDirectory { get; set; }
 }
