@@ -60,6 +60,9 @@ public class CakeFileBuilder
         string parentRelative = Path.GetRelativePath(mainDir, currentDir);
         if (parentRelative == ".")
             parentRelative = "";
+        else
+            dirEntry.Hash = FNV1A64.FNV64StringI(parentRelative.Replace('\\', '/'));
+
         dirEntry.Path = parentRelative;
 
         _dirs.Add(dirEntry);
@@ -114,7 +117,7 @@ public class CakeFileBuilder
             ulong hash = FNV1A64.FNV64StringI(normalized);
             _dirLookup.Add(hash, new CakeEntryLookup()
             {
-                NameHash = hash,
+                NameHash = !string.IsNullOrEmpty(dirInfo.Path) ? hash : 0,
                 EntryIndex = dirInfo.DirIndex
             });
         }
