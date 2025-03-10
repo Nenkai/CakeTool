@@ -138,16 +138,19 @@ public class Program
             return;
         }
 
+        if (string.IsNullOrEmpty(verbs.OutputFile))
+            verbs.OutputFile = Path.GetFullPath(verbs.InputDirectory) + ".cak";
+
         try
         {
             var builder = new CakeFileBuilder(_loggerFactory);
             builder.RegisterFiles(verbs.InputDirectory);
-            builder.Write("test.cak");
+            builder.Write(verbs.OutputFile);
 
         }
         catch (Exception ex)
         {
-            _logger.LogCritical(ex, "Failed to unpack.");
+            _logger.LogCritical(ex, "Failed to pack.");
         }
     }
 
@@ -233,4 +236,6 @@ public class PackCakeVerbs
 {
     [Option('i', "input", Required = true, HelpText = "Input directory")]
     public string InputDirectory { get; set; }
+
+    public string OutputFile { get; set; }
 }
