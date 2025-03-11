@@ -141,9 +141,16 @@ public class Program
         if (string.IsNullOrEmpty(verbs.OutputFile))
             verbs.OutputFile = Path.GetFullPath(verbs.InputDirectory) + ".cak";
 
+        string[] spl = verbs.Version.Split('.');
+        if (spl.Length != 2 || !byte.TryParse(spl[0], out byte versionMajor) || !byte.TryParse(spl[1], out byte versionMinor))
+        {
+            _logger.LogError("Invalid version string. Valid examples: 9.3, 9.2, 8.1");
+            return;
+        }
+
         try
         {
-            var builder = new CakeFileBuilder(verbs.Type, _loggerFactory);
+            var builder = new CakeFileBuilder(versionMajor, versionMinor, verbs.Type, _loggerFactory);
             builder.RegisterFiles(verbs.InputDirectory);
             builder.Bake(verbs.OutputFile);
 
@@ -234,8 +241,11 @@ public class TdbDumpVerbs
 [Verb("pack", HelpText = "Pack to a cake.")]
 public class PackCakeVerbs
 {
-    [Option('i', "input", Required = true, HelpText = "Input directory")]
+    [Option('i', "input", Required = true, HelpText = "Input directory to bake.")]
     public string InputDirectory { get; set; }
+
+    [Option('v', "version", Required = true, HelpText = "Cake version. Example: 9.3")]
+    public string Version { get; set; }
 
     [Option('o', "output", HelpText = "(Optional) Output cake file path. If not specified, defaults to input folder name.")]
     public string OutputFile { get; set; }

@@ -44,9 +44,12 @@ public class CakeFileBuilder
 
     private CakeRegistryType RegistryType { get; set; } = CakeRegistryType.Regular;
 
-    public CakeFileBuilder(CakeRegistryType registryType = CakeRegistryType.Regular, 
+    public CakeFileBuilder(byte versionMajor, byte versionMinor, CakeRegistryType registryType = CakeRegistryType.Regular, 
         ILoggerFactory? loggerFactory = null)
     {
+        VersionMajor = versionMajor;
+        versionMinor = versionMinor;
+
         RegistryType = registryType;
 
         if (loggerFactory is not null)
@@ -173,6 +176,7 @@ public class CakeFileBuilder
     public void Bake(string path)
     {
         _logger?.LogInformation("Baking cake started.");
+        _logger?.LogInformation("Version: {vMajor}.{vMinor}", VersionMajor, VersionMinor);
         _logger?.LogInformation("Registry Type: {type}", RegistryType);
         _logger?.LogInformation("Number of files: {numFiles}", _files.Count);
 
