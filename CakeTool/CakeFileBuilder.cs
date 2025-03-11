@@ -48,7 +48,7 @@ public class CakeFileBuilder
         ILoggerFactory? loggerFactory = null)
     {
         VersionMajor = versionMajor;
-        versionMinor = versionMinor;
+        VersionMinor = versionMinor;
 
         RegistryType = registryType;
 
