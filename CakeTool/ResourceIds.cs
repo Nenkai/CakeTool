@@ -30,6 +30,8 @@ public class ResourceIds
     public static uint MKRS => BinaryPrimitives.ReadUInt32LittleEndian("MKRS"u8);
     public static uint TEXT => BinaryPrimitives.ReadUInt32LittleEndian("TEXT"u8);
     public static uint PKFX => BinaryPrimitives.ReadUInt32LittleEndian("PKFX"u8);
+    public static uint PKMN => BinaryPrimitives.ReadUInt32LittleEndian("PKMN"u8);
+    public static uint DatabaseTable => BinaryPrimitives.ReadUInt32LittleEndian("DTAB"u8);
     public static uint Alembic => BinaryPrimitives.ReadUInt32LittleEndian("ABC!"u8);
     public static uint Material => BinaryPrimitives.ReadUInt32LittleEndian("MTL!"u8);
     public static uint FontPack => BinaryPrimitives.ReadUInt32LittleEndian("FTPK"u8);
@@ -39,7 +41,6 @@ public class ResourceIds
 
     public static Dictionary<string, uint> ExtensionToResourceId = new()
     {
-        [".tex"] = Texture, // TEX!
         [".jsfb"] = JsFlatBuffer, // JSFB
         [".clips"] = Clip, // CLIP
         [".mtls"] = Materials, // MTLs
@@ -59,6 +60,8 @@ public class ResourceIds
         [".mfc"] = MKRS, // MKRS
         [".txt"] = TEXT, // TEXT
         [".pkma"] = PKFX, // PKFX
+        [".pkmn"] = PKMN, // PKMN
+        [".tbl"] = DatabaseTable, // DTAB
         [".alembic"] = Alembic, // ABC!
         [".mtl"] = Material, // MTL!
         [".fntpck"] = FontPack, // FTPK

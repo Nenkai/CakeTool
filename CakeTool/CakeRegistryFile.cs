@@ -1465,14 +1465,15 @@ public class CakeRegistryFile : IDisposable
 
 public enum CakeRegistryType : byte
 {
-    Unk1 = 1,
+    Regular = 1,
     Unk2 = 2,
     Unk3 = 3,
     
     /// <summary>
     /// rs.cak
     /// </summary>
-    RSPatch = 4,
+    /// RSPatch
+    RegistryPatch = 4,
 
     /// <summary>
     /// For tiny packs, refering to files outside the cake

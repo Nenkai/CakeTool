@@ -12,7 +12,10 @@ namespace CakeTool.GameFiles.Textures;
 
 public class TextureDatabase
 {
+    // v5 = 24
+    // v6 = 25
     public uint Version { get; set; }
+
     public SortedDictionary<ulong, TextureMeta> TextureInfos = [];
 
     /// <summary>

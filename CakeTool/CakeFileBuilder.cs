@@ -42,8 +42,13 @@ public class CakeFileBuilder
 
     private BinaryStream _cakeStream;
 
-    public CakeFileBuilder(ILoggerFactory? loggerFactory = null)
+    private CakeRegistryType RegistryType { get; set; } = CakeRegistryType.Regular;
+
+    public CakeFileBuilder(CakeRegistryType registryType = CakeRegistryType.Regular, 
+        ILoggerFactory? loggerFactory = null)
     {
+        RegistryType = registryType;
+
         if (loggerFactory is not null)
             _logger = loggerFactory.CreateLogger(GetType().ToString());
     }
@@ -84,6 +89,7 @@ public class CakeFileBuilder
                 var fileEntry = new CakeFileEntry()
                 {
                     CompressedSize = (uint)info.Length,
+                    ExpandedSize = (uint)info.Length,
                     CRCChecksum = 0,
                     ParentDirIndex = dirEntry.DirIndex,
                     FileName = Path.GetFileName(relativeSubEntryPath),
@@ -164,9 +170,11 @@ public class CakeFileBuilder
         return ms.ToArray();
     }
 
-    public void Write(string path)
+    public void Bake(string path)
     {
         _logger?.LogInformation("Baking cake started.");
+        _logger?.LogInformation("Registry Type: {type}", RegistryType);
+        _logger?.LogInformation("Number of files: {numFiles}", _files.Count);
 
         FinalizeTree();
 
@@ -178,16 +186,19 @@ public class CakeFileBuilder
         _cakeStream.WriteByte(VersionMinor);
 
         if (IsAtLeastVersion(8, 7))
-            _cakeStream.WriteUInt16(((ushort)CakeRegistryType.Unk1 << 8));
+            _cakeStream.WriteUInt16((ushort)((byte)RegistryType << 8));
         else
-            _cakeStream.WriteUInt16((ushort)CakeRegistryType.Unk1);
+            _cakeStream.WriteUInt16((ushort)(byte)RegistryType);
 
         uint tocSize = GetFullHeaderSize();
         _cakeStream.Position = Utils.AlignValue(tocSize, 0x04);
 
         // Skip header & section toc for now.
-        _logger?.LogInformation("Writing files.");
-        WriteFiles();
+        if (RegistryType != CakeRegistryType.External)
+        {
+            _logger?.LogInformation("Writing files.");
+            WriteFiles();
+        }
 
         // Write sections.
         _cakeStream.Position = GetHeaderAndSectionInfoSize();
@@ -248,6 +259,9 @@ public class CakeFileBuilder
         _cakeStream.Write(sectionInfoBytes);
 
         _logger?.LogInformation("Finished. Cake size: {sizeString}", Utils.BytesToString((ulong)_cakeStream.Length));
+
+        if (RegistryType == CakeRegistryType.External)
+            _logger?.LogWarning("Cake is built as external, make sure the contents are present in the game root.");
     }
 
     private void WriteSection(Action<BinaryStream> writeCallback)

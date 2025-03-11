@@ -143,9 +143,9 @@ public class Program
 
         try
         {
-            var builder = new CakeFileBuilder(_loggerFactory);
+            var builder = new CakeFileBuilder(verbs.Type, _loggerFactory);
             builder.RegisterFiles(verbs.InputDirectory);
-            builder.Write(verbs.OutputFile);
+            builder.Bake(verbs.OutputFile);
 
         }
         catch (Exception ex)
@@ -237,5 +237,9 @@ public class PackCakeVerbs
     [Option('i', "input", Required = true, HelpText = "Input directory")]
     public string InputDirectory { get; set; }
 
+    [Option('o', "output", HelpText = "(Optional) Output cake file path. If not specified, defaults to input folder name.")]
     public string OutputFile { get; set; }
+
+    [Option('t', "type", HelpText = "(Optional) Registry type. Defaults to Regular. Known valid options: Regular, RegistryPatch, External.")]
+    public CakeRegistryType Type { get; set; } = CakeRegistryType.Regular;
 }
