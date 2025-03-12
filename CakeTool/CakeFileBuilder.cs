@@ -377,6 +377,7 @@ public class CakeFileBuilder
                 {
                     // Include header.
                     fileEntry.CompressedSize += headerSize;
+                    fileEntry.NumSectorsPerChunk = NumSectorsPerChunk;
                     ddsFileStream.CopyTo(imageDataStream);
                 }
             }
