@@ -16,8 +16,6 @@ public class CakeDirInfo
     /// </summary>
     public ulong Hash { get; set; }
     public uint PathStringOffset { get; set; }
-    public ushort SubFolderCount { get; set; }
-    public ushort FileCount { get; set; }
     public List<uint> SubFolderIndices { get; set; } = [];
     public List<uint> FileIndices { get; set; } = [];
 
@@ -35,15 +33,15 @@ public class CakeDirInfo
     {
         Hash = sr.ReadUInt64();
         PathStringOffset = sr.ReadUInt32();
-        SubFolderCount = sr.ReadUInt16(); // Confirmed read as ushort (but why?)
+        ushort subFolderCount = sr.ReadUInt16(); // Confirmed read as ushort (but why?)
         sr.ReadUInt16();
-        FileCount = sr.ReadUInt16(); // Confirmed read as ushort
+        ushort fileCount = sr.ReadUInt16(); // Confirmed read as ushort
         sr.ReadUInt16();
 
-        for (int i = 0; i < SubFolderCount; i++)
+        for (int i = 0; i < subFolderCount; i++)
             SubFolderIndices.Add(sr.ReadUInt32());
 
-        for (int i = 0; i < FileCount; i++)
+        for (int i = 0; i < fileCount; i++)
             FileIndices.Add(sr.ReadUInt32());
     }
 
@@ -51,9 +49,9 @@ public class CakeDirInfo
     {
         bs.WriteUInt64(Hash);
         bs.WriteUInt32(PathStringOffset);
-        bs.WriteUInt16(SubFolderCount);
+        bs.WriteUInt16((ushort)SubFolderIndices.Count);
         bs.WriteUInt16(0); // Padding
-        bs.WriteUInt16(FileCount);
+        bs.WriteUInt16((ushort)FileIndices.Count);
         bs.WriteUInt16(0); // Padding
 
         foreach (var index in SubFolderIndices)

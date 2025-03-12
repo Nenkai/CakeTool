@@ -13,7 +13,7 @@ public class FNV1A64
     /// </summary>
     /// <param name="path"></param>
     /// <returns></returns>
-    public static ulong FNV64StringI(string path)
+    public static ulong FNV64StringI(ReadOnlySpan<char> path)
     {
         const ulong fnv64Offset = 14695981039346656037;
         const ulong fnv64Prime = 0x100000001b3;

@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 
 using Syroot.BinaryData;
 
+using static CakeTool.GameFiles.Textures.TextureMeta;
+
 namespace CakeTool.GameFiles.Textures;
 
 public class TextureMeta
@@ -20,7 +22,7 @@ public class TextureMeta
     public byte Field_0x01 { get; set; }
     public ushort Width { get; set; }
     public ushort Height { get; set; }
-    public ushort Depth { get; set; }
+    public ushort DepthMaybe { get; set; }
     public ulong Field_0x08 { get; set; }
     public ushort Field_0x10 { get; set; }
     public ushort Field_0x12 { get; set; }
@@ -30,7 +32,7 @@ public class TextureMeta
     /// <summary>
     /// Used in V11, V13.
     /// </summary>
-    public uint DecompressedFileSize { get; set; }
+    public uint ExpandedFileSize { get; set; }
 
     /// <summary>
     /// Used in V10, V11, V14. 
@@ -40,7 +42,7 @@ public class TextureMeta
     /// <summary>
     /// Used in V11.
     /// </summary>
-    public bool IsCompressed { get; set; }
+    public bool IsCompressedByte { get; set; }
 
     public GEBaseFmt Format { get; set; }
     public GEType Type { get; set; }
@@ -49,8 +51,41 @@ public class TextureMeta
     public byte NumMipmaps { get; set; }
     public byte Field_0x22 { get; set; }
     public byte Field_0x23 { get; set; }
-    public byte UnkBitflags_0x24 { get; set; }
+
+    /// <summary>
+    /// Used in >=V13.
+    /// </summary>
+    public TexMetaFlags UnkBitflags_0x24 { get; set; }
+
+    /// <summary>
+    /// Used in >=V14.
+    /// </summary>
     public ulong FilePathHash { get; set; }
+
+    public bool IsCompressedTexture()
+    {
+        if (Version >= 13)
+            return UnkBitflags_0x24.HasFlag(TexMetaFlags.HeaderWithCompressedData);
+        else if (Version == 11)
+            return IsCompressedByte;
+        else
+            throw new NotImplementedException($"{nameof(IsCompressedTexture)}: <= v11 not yet supported");
+    }
+
+    public void SetCompressed(bool flag)
+    {
+        if (Version >= 13)
+        {
+            if (flag)
+                UnkBitflags_0x24 |= TexMetaFlags.HeaderWithCompressedData;
+            else
+                UnkBitflags_0x24 &= ~TexMetaFlags.HeaderWithCompressedData;
+        }
+        else if (Version == 11)
+            IsCompressedByte = flag;
+        else
+            throw new NotImplementedException($"{nameof(SetCompressed)}: <= v11 not yet supported");
+    }
 
     public void Read(Stream stream)
     {
@@ -62,7 +97,7 @@ public class TextureMeta
             bs.Position += 3;
             Width = bs.ReadUInt16();
             Height = bs.ReadUInt16();
-            Depth = bs.ReadUInt16();
+            DepthMaybe = bs.ReadUInt16();
             NumMipmaps = bs.Read1Byte();
             Field_0x01 = bs.Read1Byte();
             Field_0x10 = bs.ReadUInt16();
@@ -78,7 +113,7 @@ public class TextureMeta
                 bs.Read1Byte();
                 bs.Read1Byte();
                 bs.Read1Byte();
-                DecompressedFileSize = bs.ReadUInt32();
+                ExpandedFileSize = bs.ReadUInt32();
                 uint crunch = bs.ReadUInt32(); // "CRN!"
 
                 // TODO: Support crunch.
@@ -101,10 +136,10 @@ public class TextureMeta
             {
                 bs.Position += 1;
                 byte mipmapCountMaybe = bs.Read1Byte();
-                IsCompressed = bs.ReadBoolean();
-                DecompressedFileSize = bs.ReadUInt32();
+                IsCompressedByte = bs.ReadBoolean();
+                ExpandedFileSize = bs.ReadUInt32();
 
-                if (IsCompressed)
+                if (IsCompressedByte)
                     CompressedFileSize = bs.ReadUInt32();
             }
         }
@@ -113,7 +148,7 @@ public class TextureMeta
             Field_0x01 = bs.Read1Byte();
             Width = bs.ReadUInt16();
             Height = bs.ReadUInt16();
-            Depth = bs.ReadUInt16();
+            DepthMaybe = bs.ReadUInt16();
             Field_0x08 = bs.ReadUInt64();
             Field_0x10 = bs.ReadUInt16();
             Field_0x12 = bs.ReadUInt16();
@@ -121,7 +156,7 @@ public class TextureMeta
             Field_0x16 = bs.ReadUInt16();
 
             if (Version == 13)
-                DecompressedFileSize = bs.ReadUInt32();
+                ExpandedFileSize = bs.ReadUInt32();
             else if (Version == 14)
                 CompressedFileSize = bs.ReadUInt32();
 
@@ -134,11 +169,71 @@ public class TextureMeta
             NumMipmaps = bs.Read1Byte();
             Field_0x22 = bs.Read1Byte();
             Field_0x23 = bs.Read1Byte();
-            UnkBitflags_0x24 = bs.Read1Byte();
-            bs.Position += 3;
+            UnkBitflags_0x24 = (TexMetaFlags)bs.Read1Byte();
+            bs.Position += 3; // always 0
 
             if (Version >= 14)
                 FilePathHash = bs.ReadUInt64();
         }
+    }
+
+    public void Write(Stream stream)
+    {
+        var bs = new BinaryStream(stream);
+        bs.WriteByte(Version);
+        if (Version >= 13)
+        {
+            bs.WriteByte(Field_0x01);
+            bs.WriteUInt16(Width);
+            bs.WriteUInt16(Height);
+            bs.WriteUInt16(DepthMaybe);
+            bs.WriteUInt64(0); // No idea, weird hash
+
+            bs.WriteUInt16(0);
+            bs.WriteUInt16(0);
+            bs.WriteUInt16(0);
+            bs.WriteUInt16(0);
+
+            if (Version == 13)
+                bs.WriteUInt32(ExpandedFileSize);
+            else if (Version == 14)
+                bs.WriteUInt32(CompressedFileSize);
+            bs.WriteUInt32(TextureUtils.GEFormatToHash[Format]);
+
+            byte bits = (byte)(((byte)Type << 1) | (IsSRGB ? 1 : 0));
+            bs.WriteByte(bits);
+            bs.WriteByte(NumMipmaps);
+            bs.WriteByte(0);
+            bs.WriteByte(0);
+            bs.WriteByte((byte)UnkBitflags_0x24);
+            bs.Position += 3;
+
+            if (Version >= 14)
+                bs.WriteUInt64(FilePathHash);
+        }
+        else
+            throw new NotImplementedException("Textures version <v13 not yet supported");
+    }
+
+    public static uint GetSize(uint version)
+    {
+        if (version == 14)
+            return 0x30;
+        else if (version == 13)
+            return 0x28;
+
+        throw new NotImplementedException("Textures version <v13 not yet supported");
+    }
+
+    [Flags]
+    public enum TexMetaFlags : byte
+    {
+        Unk1 = 1 << 1,
+
+        /// <summary>
+        /// Whether  the data is compressed, ONLY when the data follows the header. <br/>
+        /// Does not apply to V9.3 cakes where the header exists only in _textures.tdb.
+        /// </summary>
+        HeaderWithCompressedData = 1 << 2,
     }
 }

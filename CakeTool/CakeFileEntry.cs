@@ -24,29 +24,40 @@ public class CakeFileEntry
     /// </summary>
     public uint CRCChecksum { get; set; }
 
-    public ushort NumChunks; // 0x1C
     // 8-8-14-2? bits - 2 upper bits may be unused
     public uint RawBitFlags; // 0x1E
 
     // 1 = compressed?
-    public byte UnkBitsCompressedMaybe
+    public byte CompressedBits
     {
         get => (byte)(RawBitFlags & 0b11111111);
-        set => RawBitFlags |= (byte)(value & 0b11111111);
+        set => RawBitFlags |= (uint)(value & 0b11111111);
     }
 
     // 1 = encrypted?
     public byte UnkBits2EncryptedMaybe
     {
         get => (byte)((RawBitFlags >> 8) & 0b11111111);
-        set => RawBitFlags |= (byte)((value & 0b11111111) << 8);
+        set => RawBitFlags |= (uint)((value & 0b11111111) << 8);
     }
 
-    // 1024 = ???? resource?
-    public ushort UnkFlags3
+    /// <summary>
+    /// >=V9 Cakes. For compression. 1 sector = 0x800.
+    /// </summary>
+    public ushort NumSectorsPerChunk
     {
         get => (ushort)((RawBitFlags >> 16) & 0b11_1111_1111_1111);
-        set => RawBitFlags |= (byte)((value & 0b11_1111_1111_1111) << 16);
+        set => RawBitFlags |= (uint)((value & 0b11_1111_1111_1111) << 16);
+    }
+
+    // 48 89 5C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 55 41 54 41 55 41 56 41 57 48 8D 6C 24 ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 45 ? 48 8B F9 48 8B 19
+    /* if ( (CakeFileEntry->ChunkSize_Idk & 0xC000) == 0x8000 )
+          compressedSize = expandedSize;
+    */
+    public bool UseExpandedSizeInsteadOfCompressed
+    {
+        get => ((RawBitFlags >> 31) & 1) == 1;
+        set => RawBitFlags |= (uint)((value ? 1 : 0) << 31);
     }
 
     public List<uint> ChunkEndOffsets { get; set; } = [];
@@ -56,6 +67,7 @@ public class CakeFileEntry
     public string FileName { get; set; }
     public string RelativePath { get; set; }
     public string LocalPath { get; set; }
+    public bool ShouldCompress { get; set; }
 
     public void Read(ref SpanReader sr, byte versionMajor, byte versionMinor)
     {
@@ -67,10 +79,10 @@ public class CakeFileEntry
             ResourceTypeSignature = sr.ReadUInt32();
             DataOffset = sr.ReadUInt64();
             ExpandedSize = sr.ReadUInt32();
-            NumChunks = sr.ReadUInt16();
+            uint numChunks = sr.ReadUInt16();
             RawBitFlags = sr.ReadUInt32();
 
-            for (int i = 0; i < NumChunks; i++)
+            for (int i = 0; i < numChunks; i++)
                 ChunkEndOffsets.Add(sr.ReadUInt32());
         }
         else if (versionMajor >= 8)
@@ -119,7 +131,7 @@ public class CakeFileEntry
             bs.WriteUInt32(ResourceTypeSignature);
             bs.WriteUInt64(DataOffset);
             bs.WriteUInt32(ExpandedSize);
-            bs.WriteUInt16(NumChunks);
+            bs.WriteUInt16((ushort)ChunkEndOffsets.Count);
             bs.WriteUInt32(RawBitFlags);
 
             foreach (var offset in ChunkEndOffsets)

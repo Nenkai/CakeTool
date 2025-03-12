@@ -16,12 +16,30 @@ public class TextureDatabase
     // v6 = 25
     public uint Version { get; set; }
 
-    public SortedDictionary<ulong, TextureMeta> TextureInfos = [];
+    public SortedDictionary<ulong, TextureMeta> TextureInfos { get; set; } = [];
 
     /// <summary>
     /// 'T_DB'
     /// </summary>
     public const uint MAGIC = 0x42445F54;
+
+    public TextureDatabase(byte version = 6)
+    {
+        Version = version;
+    }
+
+    public TextureMeta Add(string path, TextureMeta textureMeta)
+    {
+        ulong hash = FNV1A64.FNV64StringI(path.Replace('\\', '/'));
+        textureMeta.FilePathHash = hash;
+
+        if (!TextureInfos.ContainsKey(hash))
+            TextureInfos.Add(hash, textureMeta);
+        else
+            TextureInfos[hash] = textureMeta;
+
+        return textureMeta;
+    }
 
     public void Read(Stream stream)
     {
@@ -53,6 +71,27 @@ public class TextureDatabase
         var tdb = new TextureDatabase();
         tdb.Read(fs);
         return tdb;
+    }
+
+    public void Write(Stream stream)
+    {
+        var bs = new BinaryStream(stream);
+        bs.WriteUInt32(MAGIC);
+        bs.WriteUInt32(Version);
+        bs.WriteUInt32((uint)TextureInfos.Count);
+
+        uint structSize = Version switch
+        {
+            5 => TextureMeta.GetSize(13),
+            6 => TextureMeta.GetSize(14),
+        };
+        bs.WriteUInt32(0x08 + structSize);
+
+        foreach (KeyValuePair<ulong, TextureMeta> kv in TextureInfos)
+        {
+            bs.WriteUInt64(kv.Key);
+            kv.Value.Write(bs);
+        }
     }
 
     public bool TryGetTexture(string name, out TextureMeta textureInfo)

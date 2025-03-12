@@ -14,6 +14,9 @@ public partial class Oodle
     /// </summary>
     private const string OodleLibraryPath = "oo2core_9_win64";
 
+    [LibraryImport(OodleLibraryPath, EntryPoint = "OodleLZ_Compress")]
+    private static partial long OodleLZ_Compress(OodleFormat format, in byte decompressedBuffer, long decompressedSize, in byte compressedBuffer, OodleCompressionLevel compressionLevel, uint a, uint b, uint c, uint d, uint e);
+
     /// <summary>
     /// Oodle64 Decompression Method 
     /// </summary>
@@ -23,6 +26,18 @@ public partial class Oodle
 
     public static uint GetCompressedBounds(uint BufferSize)
         => BufferSize + 274 * ((BufferSize + 0x3FFFF) / 0x400000);
+
+    /// <summary>
+    /// Compresses a byte array of Oodle Compressed Data (Requires Oodle DLL)
+    /// </summary>
+    /// <param name="input">Input Compressed Data</param>
+    /// <param name="decompressedLength">Decompressed Size</param>
+    /// <returns>Resulting Array if success, otherwise null.</returns>
+    public static long Compress(OodleFormat format, in byte input, long inputLength, in byte output, OodleCompressionLevel level)
+    {
+        // Decode the data (other parameters such as callbacks not required)
+        return OodleLZ_Compress(format, input, inputLength, output, level, 0, 0, 0, 0, 0);
+    }
 
     /// <summary>
     /// Decompresses a byte array of Oodle Compressed Data (Requires Oodle DLL)
@@ -35,4 +50,35 @@ public partial class Oodle
         // Decode the data (other parameters such as callbacks not required)
         return OodleLZ_Decompress(input, inputLength, output, decompressedLength, 1, 0, 0, 0, 0, 0, 0, 0, 0, 3);
     }
+}
+
+public enum OodleFormat : uint
+{
+    LZH,
+    LZHLW,
+    LZNIB,
+    None,
+    LZB16,
+    LZBLW,
+    LZA,
+    LZNA,
+    Kraken,
+    Mermaid,
+    BitKnit,
+    Selkie,
+    Akkorokamui
+}
+
+public enum OodleCompressionLevel : ulong
+{
+    None,
+    Fastest,
+    Faster,
+    Fast,
+    Normal,
+    Level1,
+    Level2,
+    Level3,
+    Level4,
+    Level5
 }

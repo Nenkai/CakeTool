@@ -44,6 +44,8 @@ public class CakeRegistryFile : IDisposable
     public const int DIR_INFO_TABLE_SECTION_INDEX = 3;
     public const int STRING_TABLE_SECTION_INDEX = 4;
 
+    public const uint SECTOR_SIZE_BYTES = 0x400;
+
     public string FileName { get; set; } = string.Empty;
 
     // Main header stuff
@@ -309,6 +311,28 @@ public class CakeRegistryFile : IDisposable
 
         OnCakeEntriesLoaded();
 
+        if (_fileLookupTable.TryGetValue(0x1CEFDE432072B8AF, out CakeEntryLookup look))
+        {
+            var ent = _fileEntries[(int)look.EntryIndex];
+            string path = GetGamePathForEntry(ent);
+            ;
+        }
+
+        for (int i = 0; i < _fileEntries.Count; i++)
+        {
+            _fileEntries[i].FileName = _strings[_fileEntries[i].StringOffset];
+
+        }
+
+
+        string jizz = JsonSerializer.Serialize(_fileEntries.Where(e => e.CompressedBits == 0 && e.CompressedSize > 0x1000), new JsonSerializerOptions()
+        {
+            WriteIndented = true,
+        });
+        File.WriteAllText("test.json", jizz);
+
+        var test = _fileEntries.Where(e => e.CompressedBits != 0).MinBy(e => e.CompressedSize);
+
         _logger?.LogInformation("Cake initialized.");
     }
 
@@ -380,7 +404,7 @@ public class CakeRegistryFile : IDisposable
         {
             ExtractResource(fileName, gamePath, inputBuffer, outputStream);
         }
-        else if (entry.ResourceTypeSignature == ResourceIds.Texture && IsVersion(9, 1) || IsVersion(9, 2))
+        else if (entry.ResourceTypeSignature == ResourceIds.Texture && (IsVersion(9, 1) || IsVersion(9, 2)))
         {
             // Will need to be post-processed in PostProcessFileData. File contains texture meta & compressed data
             outputStream.Write(inputBuffer.Span);
@@ -434,14 +458,14 @@ public class CakeRegistryFile : IDisposable
                         PrintTextureInfo(gamePath, texMeta);
 
                         // V11 (23) in particular can be compressed in-place
-                        if (texMeta.Version == 11 && texMeta.IsCompressed)
+                        if (texMeta.Version == 11 && texMeta.IsCompressedTexture())
                         {
                             using var inputBuffer = MemoryOwner<byte>.Allocate((int)texMeta.CompressedFileSize);
                             fileDataStream.ReadExactly(inputBuffer.Span);
 
-                            using var outputBuffer = MemoryOwner<byte>.Allocate((int)texMeta.DecompressedFileSize);
+                            using var outputBuffer = MemoryOwner<byte>.Allocate((int)texMeta.ExpandedFileSize);
                             long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), texMeta.CompressedFileSize,
-                                                            in MemoryMarshal.GetReference(outputBuffer.Span), texMeta.DecompressedFileSize);
+                                                            in MemoryMarshal.GetReference(outputBuffer.Span), texMeta.ExpandedFileSize);
 
                             TextureUtils.ConvertToDDS(texMeta, outputBuffer.AsStream(), outputStream);
                         }
@@ -461,15 +485,15 @@ public class CakeRegistryFile : IDisposable
 
     private void ExtractChunked(CakeFileEntry entry, string gamePath, Span<byte> inputBuffer, Stream outputStream, bool isEmbeddedTextureResource = false)
     {
-        if (entry.ExpandedSize != entry.CompressedSize)
+        if (entry.CompressedBits != 0)
         {
             uint chunkOffset = 0;
             long decOffset = 0;
 
-            const int MAX_DEC_CHUNK_SIZE = 0x100000;
-            using var outputBuffer = MemoryOwner<byte>.Allocate(MAX_DEC_CHUNK_SIZE);
+            uint decChunkSize = entry.NumSectorsPerChunk * SECTOR_SIZE_BYTES;
+            using var outputBuffer = MemoryOwner<byte>.Allocate((int)decChunkSize);
 
-            for (int i = 0; i < entry.NumChunks; i++)
+            for (int i = 0; i < entry.ChunkEndOffsets.Count; i++)
             {
                 uint chunkSize = entry.ChunkEndOffsets[i] - (i != 0 ? entry.ChunkEndOffsets[i - 1] : 0);
                 if (isEmbeddedTextureResource && i == 0)
@@ -478,7 +502,7 @@ public class CakeRegistryFile : IDisposable
                 Span<byte> chunk = inputBuffer.Slice((int)chunkOffset, (int)chunkSize);
 
                 // There's probably a better way to calculate this.
-                long decSize = Math.Min(decOffset + MAX_DEC_CHUNK_SIZE, entry.ExpandedSize) - decOffset;
+                long decSize = Math.Min(decOffset + decChunkSize, entry.ExpandedSize) - decOffset;
 
                 // The last chunk may not be compressed if it's too small to have been worth it.
                 // The game probably detects this better
@@ -580,14 +604,13 @@ public class CakeRegistryFile : IDisposable
         var texMeta = new TextureMeta();
         texMeta.Read(fileDataStream);
 
-        int currentOffset = (int)fileDataStream.Position;
-
-        int compressedSize = (int)(fileDataStream.Length - currentOffset);
         PrintTextureInfo(gamePath, texMeta);
 
-        if (fileEntry.ExpandedSize != compressedSize)
+        int currentOffset = (int)fileDataStream.Position;
+        if (texMeta.IsCompressedTexture())
         {
-            byte[] compressed = fileDataStream.ReadBytes((int)fileEntry.CompressedSize - currentOffset);
+            int compressedSize = (int)(fileDataStream.Length - currentOffset);
+            byte[] compressed = fileDataStream.ReadBytes(compressedSize);
 
             using RecyclableMemoryStream decompressedImageDataStream = manager.GetStream(tag: null, fileEntry.ExpandedSize);
             ExtractChunked(fileEntry, gamePath, compressed, decompressedImageDataStream, true);
@@ -604,7 +627,7 @@ public class CakeRegistryFile : IDisposable
     private void PrintTextureInfo(string gamePath, TextureMeta texMeta)
     {
         _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texMeta.Width, texMeta.Height,
-                         texMeta.Format, texMeta.Type, texMeta.IsSRGB, texMeta.Depth, texMeta.Field_0x01);
+                         texMeta.Format, texMeta.Type, texMeta.IsSRGB, texMeta.DepthMaybe, texMeta.Field_0x01);
     }
 
     public string GetGamePathForEntry(CakeFileEntry entry)
@@ -615,7 +638,7 @@ public class CakeRegistryFile : IDisposable
             CakeDirInfo parentDir = _dirEntries[(int)entry.ParentDirIndex];
             string dirName = _strings[parentDir.PathStringOffset];
             string fileName = _strings[entry.StringOffset];
-            gamePath = Path.Combine(dirName, fileName);
+            gamePath = Path.Combine(dirName, fileName).Replace('\\', '/');
         }
         else
             gamePath = _strings[entry.StringOffset]; // Old versions has the full path.
