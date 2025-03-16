@@ -64,7 +64,7 @@ public class MapBinary
         using var sw = new StreamWriter(path);
         foreach (var symbol in Symbols)
         {
-            sw.WriteLine($"0x{symbol.Offset:X16}  {symbol.Name}");
+            sw.WriteLine($"{symbol.Offset:X}\t{symbol.Name}");
         }
     }
 }
