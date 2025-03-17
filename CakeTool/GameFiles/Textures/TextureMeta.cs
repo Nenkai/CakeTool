@@ -6,12 +6,15 @@ using System.Threading.Tasks;
 
 using Syroot.BinaryData;
 
-using static CakeTool.GameFiles.Textures.TextureMeta;
-
 namespace CakeTool.GameFiles.Textures;
 
 public class TextureMeta
 {
+    /// <summary>
+    /// 'CRN!'
+    /// </summary>
+    public const uint CrunchMagic = 0x214E5243;
+
     // v9 = 20
     // v10 = 22
     // v11 = 23
@@ -19,15 +22,20 @@ public class TextureMeta
     // v14 = 25
     public byte Version { get; set; }
 
-    public byte Field_0x01 { get; set; }
+    public TextureDimension DimensionType { get; set; } = TextureDimension.Texture_2D;
     public ushort Width { get; set; }
     public ushort Height { get; set; }
-    public ushort DepthMaybe { get; set; }
-    public ulong Field_0x08 { get; set; }
-    public ushort Field_0x10 { get; set; }
-    public ushort Field_0x12 { get; set; }
-    public ushort Field_0x14 { get; set; }
-    public ushort Field_0x16 { get; set; }
+    public ushort Depth { get; set; }
+
+    /// <summary>
+    /// Does not appear to be used.
+    /// </summary>
+    public ulong UnkHash { get; set; }
+
+    /// <summary>
+    /// Does not appear to be used.
+    /// </summary>
+    public ushort[] UnkSizes = new ushort[4];
 
     /// <summary>
     /// Used in V11, V13.
@@ -52,6 +60,8 @@ public class TextureMeta
     public byte Field_0x22 { get; set; }
     public byte Field_0x23 { get; set; }
 
+    public bool IsCrunched { get; set; }
+
     /// <summary>
     /// Used in >=V13.
     /// </summary>
@@ -68,6 +78,8 @@ public class TextureMeta
             return UnkBitflags_0x24.HasFlag(TexMetaFlags.HeaderWithCompressedData);
         else if (Version == 11)
             return IsCompressedByte;
+        else if (Version == 9 || Version == 10)
+            return IsCrunched;
         else
             throw new NotImplementedException($"{nameof(IsCompressedTexture)}: <= v11 not yet supported");
     }
@@ -97,40 +109,60 @@ public class TextureMeta
             bs.Position += 3;
             Width = bs.ReadUInt16();
             Height = bs.ReadUInt16();
-            DepthMaybe = bs.ReadUInt16();
-            NumMipmaps = bs.Read1Byte();
-            Field_0x01 = bs.Read1Byte();
-            Field_0x10 = bs.ReadUInt16();
-            Field_0x12 = bs.ReadUInt16();
-            Field_0x14 = bs.ReadUInt16();
-            Field_0x16 = bs.ReadUInt16();
+            Depth = bs.ReadUInt16();
+
+            if (Version >= 10)
+            {
+                NumMipmaps = bs.Read1Byte();
+                DimensionType = (TextureDimension)bs.Read1Byte();
+            }
+            else
+                bs.ReadUInt16();
+
+            for (int i = 0; i < 4; i++)
+                UnkSizes[i] = bs.ReadUInt16();
             Format = TextureUtils.FormatHashToFormat[bs.ReadUInt32()];
             Type = TextureUtils.TypeHashToType[bs.ReadUInt32()];
             IsSRGB = bs.ReadBoolean();
 
             if (Version == 9)
             {
-                bs.Read1Byte();
-                bs.Read1Byte();
-                bs.Read1Byte();
-                ExpandedFileSize = bs.ReadUInt32();
+                NumMipmaps = bs.Read1Byte();
+                DimensionType = (TextureDimension)bs.Read1Byte();
+                bs.Align(0x04);
+
+                uint size = bs.ReadUInt32();
                 uint crunch = bs.ReadUInt32(); // "CRN!"
 
-                // TODO: Support crunch.
-                // Game can use https://github.com/BinomialLLC/crunch for bc compression
-                // Maybe expand over https://github.com/jacano/ManagedCrunch ?
-                // Or reuse AssetRipper implementation
-                // https://github.com/AssetRipper/AssetRipper/blob/8435c391bd4db44f6d53aa00515258d2b68f7dda/Source/AssetRipper.Export.Modules.Textures/
+                if (crunch == CrunchMagic)
+                {
+                    IsCrunched = true;
+                    CompressedFileSize = size;
+                    // TODO: Support crunch.
+                    // Game can use https://github.com/BinomialLLC/crunch for bc compression
+                    // Maybe expand over https://github.com/jacano/ManagedCrunch ?
+                    // Or reuse AssetRipper implementation
+                    // https://github.com/AssetRipper/AssetRipper/blob/8435c391bd4db44f6d53aa00515258d2b68f7dda/Source/AssetRipper.Export.Modules.Textures/
 
-                // Relevant calls:
-                // crnd::crn_unpacker::init
-                // crnd::crn_unpacker::unpack_level
+                    // Relevant calls:
+                    // crnd::crn_unpacker::init
+                    // crnd::crn_unpacker::unpack_level
+                    
+                }
+                else
+                {
+                    ExpandedFileSize = size;
+                }
             }
-            if (Version == 10)
+            else if (Version == 10)
             {
                 bs.Align(0x04);
                 CompressedFileSize = bs.ReadUInt32();
-                uint crunchRelatedMaybe = bs.ReadUInt32();
+                uint crunch = bs.ReadUInt32();
+                if (crunch == CrunchMagic)
+                {
+                    IsCrunched = true;
+                }
             }
             else if (Version == 11)
             {
@@ -145,15 +177,13 @@ public class TextureMeta
         }
         else if (Version >= 13)
         {
-            Field_0x01 = bs.Read1Byte();
+            DimensionType = (TextureDimension)bs.Read1Byte();
             Width = bs.ReadUInt16();
             Height = bs.ReadUInt16();
-            DepthMaybe = bs.ReadUInt16();
-            Field_0x08 = bs.ReadUInt64();
-            Field_0x10 = bs.ReadUInt16();
-            Field_0x12 = bs.ReadUInt16();
-            Field_0x14 = bs.ReadUInt16();
-            Field_0x16 = bs.ReadUInt16();
+            Depth = bs.ReadUInt16();
+            UnkHash = bs.ReadUInt64();
+            for (int i = 0; i < 4; i++)
+                UnkSizes[i] = bs.ReadUInt16();
 
             if (Version == 13)
                 ExpandedFileSize = bs.ReadUInt32();
@@ -183,10 +213,10 @@ public class TextureMeta
         bs.WriteByte(Version);
         if (Version >= 13)
         {
-            bs.WriteByte(Field_0x01);
+            bs.WriteByte((byte)DimensionType);
             bs.WriteUInt16(Width);
             bs.WriteUInt16(Height);
-            bs.WriteUInt16(DepthMaybe);
+            bs.WriteUInt16(Depth);
             bs.WriteUInt64(0); // No idea, weird hash
 
             bs.WriteUInt16(0);
@@ -235,5 +265,16 @@ public class TextureMeta
         /// Does not apply to V9.3 cakes where the header exists only in _textures.tdb.
         /// </summary>
         HeaderWithCompressedData = 1 << 2,
+    }
+
+    public enum TextureDimension
+    {
+        Texture_1D = 0,
+        Texture_1D_2 = 1,
+        Texture_2D = 2,
+        Texture_2D_2 = 3,
+        Texture_3D = 4,
+        Texture_Cubemap = 5,
+        Texture_Cubemap_2 = 6,
     }
 }

@@ -286,7 +286,12 @@ public class CakeFileBuilder
 
     private CakeFileEntry CreateTexFromDds(string localPath, string relativePath)
     {
+        _logger?.LogInformation("Converting '{localPath}' to .tex...", relativePath);
+
         using var ddsFileStream = File.OpenRead(localPath);
+        if (ddsFileStream.Length < 4 + 0x7C)
+            throw new IOException("Invalid dds file, file is smaller than a regular dds header.");
+
         var header = new Pfim.DdsHeader(ddsFileStream);
 
         // https://learn.microsoft.com/en-us/windows/win32/direct3ddds/dx-graphics-dds-pguide
@@ -295,6 +300,9 @@ public class CakeFileBuilder
         {
             var dx10Header = new DdsHeaderDxt10(ddsFileStream);
             format = (DXGI_FORMAT)dx10Header.DxgiFormat;
+
+            if (dx10Header.ResourceDimension != D3D10ResourceDimension.D3D10_RESOURCE_DIMENSION_TEXTURE2D)
+                throw new IOException("Non 2d textures are not supported.");
         }
         else
         {
@@ -304,14 +312,26 @@ public class CakeFileBuilder
                 format = DXGI_FORMAT.DXGI_FORMAT_BC2_UNORM;
             else if (header.PixelFormat.FourCC == CompressionAlgorithm.D3DFMT_DXT4 || header.PixelFormat.FourCC == CompressionAlgorithm.D3DFMT_DXT5)
                 format = DXGI_FORMAT.DXGI_FORMAT_BC3_UNORM;
-            else if (header.PixelFormat.FourCC == CompressionAlgorithm.BC4U)
+            else if (header.PixelFormat.FourCC == CompressionAlgorithm.BC4U || (uint)header.PixelFormat.FourCC == 0x20344342) // 'BC4 '
                 format = DXGI_FORMAT.DXGI_FORMAT_BC4_UNORM;
             else if (header.PixelFormat.FourCC == CompressionAlgorithm.BC4S)
                 format = DXGI_FORMAT.DXGI_FORMAT_BC4_SNORM;
-            else if (header.PixelFormat.FourCC == CompressionAlgorithm.ATI2 || header.PixelFormat.FourCC == CompressionAlgorithm.BC5U)
+            else if (header.PixelFormat.FourCC == CompressionAlgorithm.ATI2 || header.PixelFormat.FourCC == CompressionAlgorithm.BC5U || (uint)header.PixelFormat.FourCC == 0x20354342) // 'BC5 '
                 format = DXGI_FORMAT.DXGI_FORMAT_BC5_UNORM;
             else if (header.PixelFormat.FourCC == CompressionAlgorithm.BC5S)
                 format = DXGI_FORMAT.DXGI_FORMAT_BC5_SNORM;
+            else if ((uint)header.PixelFormat.FourCC == 0x48364342) // 'BC6H'
+                format = DXGI_FORMAT.DXGI_FORMAT_BC6H_UF16;
+            else if ((uint)header.PixelFormat.FourCC == 0x48364342) // 'BC7 '
+                format = DXGI_FORMAT.DXGI_FORMAT_BC7_UNORM;
+            else if ((uint)header.PixelFormat.FourCC == 0x70)
+                format = DXGI_FORMAT.DXGI_FORMAT_R16G16_FLOAT;
+            else if ((uint)header.PixelFormat.FourCC == 0x71)
+                format = DXGI_FORMAT.DXGI_FORMAT_R16G16B16A16_FLOAT;
+            else if ((uint)header.PixelFormat.FourCC == 0x72)
+                format = DXGI_FORMAT.DXGI_FORMAT_R32_FLOAT;
+            else if ((uint)header.PixelFormat.FourCC == 0x74)
+                format = DXGI_FORMAT.DXGI_FORMAT_R32G32B32A32_FLOAT;
             else if (header.PixelFormat.FourCC == CompressionAlgorithm.None)
                 format = DXGI_FORMAT.DXGI_FORMAT_R8G8B8A8_UNORM;
         }
@@ -328,11 +348,11 @@ public class CakeFileBuilder
         TextureMeta texMeta = _tdb.Add(texPath, new TextureMeta()
         {
             Version = version,
-            Field_0x01 = 2,
+            DimensionType = TextureMeta.TextureDimension.Texture_2D,
 
             Width = (ushort)header.Width,
             Height = (ushort)header.Height,
-            DepthMaybe = 0,
+            Depth = 0,
             Format = geFormat,
             Type = geType,
             IsSRGB = isSRGB,

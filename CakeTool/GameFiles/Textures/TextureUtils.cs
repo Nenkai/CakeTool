@@ -84,14 +84,43 @@ public class TextureUtils
     public static void ConvertToDDS(TextureMeta texMeta, Stream imageDataStream, Stream outputStream)
     {
         var header = new DdsHeader();
-        header.Flags = DDSHeaderFlags.TEXTURE | DDSHeaderFlags.LINEARSIZE;
+        header.Flags = DDSHeaderFlags.TEXTURE;
         header.Width = texMeta.Width;
         header.Height = texMeta.Height;
         header.FormatFlags = DDSPixelFormatFlags.DDPF_FOURCC;
         header.FourCCName = "DX10";
         header.LastMipmapLevel = texMeta.NumMipmaps;
         if (texMeta.NumMipmaps > 1)
+        {
             header.Flags |= DDSHeaderFlags.MIPMAP;
+            header.DwCaps1 |= (DDSCAPS.DDSCAPS_MIPMAP | DDSCAPS.DDSCAPS_COMPLEX);
+        }
+
+        if (texMeta.DimensionType == TextureMeta.TextureDimension.Texture_1D || texMeta.DimensionType == TextureMeta.TextureDimension.Texture_1D_2)
+            header.ResourceDimension = D3D10_RESOURCE_DIMENSION.DDS_DIMENSION_TEXTURE1D;
+        else if (texMeta.DimensionType == TextureMeta.TextureDimension.Texture_2D || texMeta.DimensionType == TextureMeta.TextureDimension.Texture_2D_2)
+            header.ResourceDimension = D3D10_RESOURCE_DIMENSION.DDS_DIMENSION_TEXTURE2D;
+        else if (texMeta.DimensionType == TextureMeta.TextureDimension.Texture_Cubemap)
+        {
+            // No clue if any of this is right
+
+            header.DwCaps1 |= DDSCAPS.DDSCAPS_COMPLEX;
+            header.DwCaps2 |= DDSCAPS2.DDSCAPS2_CUBEMAP | DDSCAPS2.DDSCAPS2_CUBEMAP_POSITIVEX | DDSCAPS2.DDSCAPS2_CUBEMAP_NEGATIVEX |
+                DDSCAPS2.DDSCAPS2_CUBEMAP_POSITIVEY | DDSCAPS2.DDSCAPS2_CUBEMAP_NEGATIVEY | DDSCAPS2.DDSCAPS2_CUBEMAP_POSITIVEZ | DDSCAPS2.DDSCAPS2_CUBEMAP_NEGATIVEZ;
+            header.Depth = texMeta.Depth;
+            header.ResourceDimension = D3D10_RESOURCE_DIMENSION.DDS_DIMENSION_TEXTURE2D;
+        }
+        else if (texMeta.DimensionType == TextureMeta.TextureDimension.Texture_3D)
+        {
+            // Same here
+
+            header.Flags |= DDSHeaderFlags.DEPTH;
+            header.DwCaps1 |= DDSCAPS.DDSCAPS_COMPLEX;
+            header.DwCaps2 |= DDSCAPS2.DDSCAPS2_VOLUME;
+            header.Depth = texMeta.Depth;
+            header.ResourceDimension = D3D10_RESOURCE_DIMENSION.DDS_DIMENSION_TEXTURE3D;
+        }
+
         header.DxgiFormat = TextureUtils.GEFormatToDXGIFormat(texMeta.Format, texMeta.Type, texMeta.IsSRGB);
         header.Write(outputStream, imageDataStream);
     }

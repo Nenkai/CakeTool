@@ -373,7 +373,7 @@ public class CakeRegistryFile : IDisposable
         using RecyclableMemoryStream fileDataStream = manager.GetStream(tag: null, entry.ExpandedSize);
         ExtractFileData(entry, fileName, fileDataStream);
 
-        if (entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds && IsAtLeastVersion(8, 1))
+        if (entry.ResourceTypeSignature == ResourceIds.Texture && !_noConvertDds)
             outputPath = Path.ChangeExtension(outputPath, ".dds");
 
         using var outputFileStream = File.Create(outputPath);
@@ -449,32 +449,39 @@ public class CakeRegistryFile : IDisposable
                     var texMeta = new TextureMeta();
                     texMeta.Read(fileDataStream);
 
-                    if (texMeta.Version == 9)
-                    {
-                        _logger.LogWarning("TextureInfo version 9 is not yet supported (uses crunch library). Extracting raw.");
-                    }
-                    else
-                    {
-                        PrintTextureInfo(gamePath, texMeta);
+                    PrintTextureInfo(gamePath, texMeta);
 
-                        // V11 (23) in particular can be compressed in-place
-                        if (texMeta.Version == 11 && texMeta.IsCompressedTexture())
+                    if ((texMeta.Version == 9 || texMeta.Version == 10) && texMeta.IsCompressedTexture()) // V9/V10 (20) Crunched
+                    {
+                        if (texMeta.IsCompressedTexture())
                         {
+                            // Note/todo: end of buffer may have format name
                             using var inputBuffer = MemoryOwner<byte>.Allocate((int)texMeta.CompressedFileSize);
                             fileDataStream.ReadExactly(inputBuffer.Span);
 
-                            using var outputBuffer = MemoryOwner<byte>.Allocate((int)texMeta.ExpandedFileSize);
-                            long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), texMeta.CompressedFileSize,
-                                                            in MemoryMarshal.GetReference(outputBuffer.Span), texMeta.ExpandedFileSize);
-
-                            TextureUtils.ConvertToDDS(texMeta, outputBuffer.AsStream(), outputStream);
+                            if (Crunch2.DecompressToDds(inputBuffer.Span, texMeta.CompressedFileSize, out MemoryOwner<byte>? uncompressed))
+                            {
+                                outputStream.Write(uncompressed.Span);
+                                uncompressed.Dispose();
+                            }
                         }
-                        else
-                        {
-                            TextureUtils.ConvertToDDS(texMeta, fileDataStream, outputStream);
-                        }
-                        return;
                     }
+                    else if (texMeta.Version == 11 && texMeta.IsCompressedTexture()) // V11 (23) can be compressed in-place with oodle
+                    {
+                        using var inputBuffer = MemoryOwner<byte>.Allocate((int)texMeta.CompressedFileSize);
+                        fileDataStream.ReadExactly(inputBuffer.Span);
+
+                        using var outputBuffer = MemoryOwner<byte>.Allocate((int)texMeta.ExpandedFileSize);
+                        long decoded = Oodle.Decompress(in MemoryMarshal.GetReference(inputBuffer.Span), texMeta.CompressedFileSize,
+                                                        in MemoryMarshal.GetReference(outputBuffer.Span), texMeta.ExpandedFileSize);
+
+                        TextureUtils.ConvertToDDS(texMeta, outputBuffer.AsStream(), outputStream);
+                    }
+                    else
+                    {
+                        TextureUtils.ConvertToDDS(texMeta, fileDataStream, outputStream);
+                    }
+                    return;
                 }
             }
         }
@@ -626,8 +633,14 @@ public class CakeRegistryFile : IDisposable
 
     private void PrintTextureInfo(string gamePath, TextureMeta texMeta)
     {
-        _logger?.LogInformation("Converting '{gamePath}' to .dds... ({width}x{height}, {format}, {type}, SRGB:{isSRGB}, depth(?)={depth}, field_0x01={field_0x01})", gamePath, texMeta.Width, texMeta.Height,
-                         texMeta.Format, texMeta.Type, texMeta.IsSRGB, texMeta.DepthMaybe, texMeta.Field_0x01);
+        string formatStr = $"{texMeta.Format}-{texMeta.Type}" + (texMeta.IsSRGB ? "-SRGB" : string.Empty);
+
+        _logger?.LogInformation("Converting '{gamePath}' to .dds... ({dimType}, {width}x{height}, {formatStr}, depth={depth}, {sizes})", gamePath,
+                         texMeta.DimensionType,
+                         texMeta.Width, texMeta.Height,
+                         formatStr,
+                         texMeta.Depth,
+                         string.Join(",", texMeta.UnkSizes));
     }
 
     public string GetGamePathForEntry(CakeFileEntry entry)
