@@ -24,8 +24,6 @@ using CakeTool.GameFiles.Textures;
 using Syroot.BinaryData;
 using Syroot.BinaryData.Memory;
 using System.Text.Json;
-using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 
 namespace CakeTool;
 
