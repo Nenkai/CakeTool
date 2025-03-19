@@ -24,6 +24,8 @@ using CakeTool.GameFiles.Textures;
 using Syroot.BinaryData;
 using Syroot.BinaryData.Memory;
 using System.Text.Json;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace CakeTool;
 
@@ -118,8 +120,11 @@ public class CakeRegistryFile : IDisposable
     private static readonly RecyclableMemoryStreamManager manager = new RecyclableMemoryStreamManager();
 
     // Encryption stuff
-    public const string ConstantKeyV9 = "V9w0ooTmKK'{z!mg6b$E%1,s2)nj2o_";
-    public const string ConstantIVV9 = "XC;JQm8";
+    public const string ConstantKeyV9_3 = "W?#i]}UvfXzW[iQx;QbLzJH3j}ct/KZ[";
+    public const string ConstantIVV9_3 = "+e{*;_hX";
+
+    public const string ConstantKeyV9_1 = "V9w0ooTmKK'{z!mg6b$E%1,s2)nj2o_";
+    public const string ConstantIVV9_1 = "XC;JQm8";
 
     public const string ConstantKeyV8 = "r-v4WVyWOprRr7Qw9kN0myq5KCXGaaf";
     public const string ConstantIVV8 = "xTKmfw_";
@@ -1332,41 +1337,54 @@ public class CakeRegistryFile : IDisposable
         // Step 1: Generate seed
         string nameSeed = $"{FileName}-{VersionMajor}-{VersionMinor}".ToUpper();
 
-        // TODO.
-        Dictionary<string, uint> headerKeys = new()
-        {
-            ["bakedfile00"] = 0x2A158AB8,
-            ["bakedfile01"] = 0x2A158AB8,
-            ["bakedfile02"] = 0x976D8958,
-            ["bakedfile03"] = 0x976D8958, // Incase
-            ["bakedfile04"] = 0x05C2BD3B, // Incase
-            ["bakedfile05"] = 0x05C2BD3B, // Incase
-            ["bakedfile50"] = 0xAE0B193A,
-            ["bakedfile51"] = 0xAE0B193A,
-            ["bakedfile52"] = 0x25ED8EBC,
-            ["bakedfile53"] = 0x25ED8EBC, // Incase
-            ["bakedfile54"] = 0x4C2720F0, // Incase
-            ["bakedfile55"] = 0x4C2720F0, // Incase
-            ["bakedfile56"] = 0x3B340725,
-            ["bakedfile57"] = 0x3B340725,
-            ["bakedfile60"] = 0x9BF4B101,
-            ["bakedfile61"] = 0x9BF4B101,
-            ["bakedfile62"] = 0xAD471170,
-            ["bakedfile63"] = 0xAD471170,
-            ["bakedfile80"] = 0xA8BA23F9, // Incase
-            ["bakedfile81"] = 0xA8BA23F9,
-            ["bakedfile90"] = 0x13FFB345, // Incase
-            ["bakedfile91"] = 0x13FFB345,
-            ["bakedfile100"] = 0x1B6082C8, // Incase
-            ["bakedfile101"] = 0x1B6082C8,
-            ["bakedfile110"] = 0x1B6082C8, // Incase
-            ["bakedfile111"] = 0x1B6082C8, // Incase
-            ["rs"] = 0xEBB165D9,
-        };
+        // Step 2: Generate hash table from name seed (OK)
+        Memory<byte> tableBytes = CreateInitialKeyTableFromNameSeed(nameSeed, 0x80);
+        Span<ulong> tableULongs = MemoryMarshal.Cast<byte, ulong>(tableBytes.Span);
 
-        if (!headerKeys.TryGetValue(Path.GetFileNameWithoutExtension(FileName.ToLower()), out uint key))
-            throw new NotSupportedException($"Could not find header key for cake file '{FileName}'.");
+        // Step 3: Generate a mt seed (lower 32 then higher) before hashing hash table
+        uint mtSeed1 = ScrambleGenSeed(tableBytes.Span);
+        uint crc = 0xFFFFFFFF;
+        for (int i = 0; i < 0x80; i++)
+            crc = BitOperations.Crc32C(crc, tableBytes.Span[i]);
 
+        uint loSeed = ~(mtSeed1 ^ crc);
+        var sfmtRand = new SFMT(loSeed);
+        uint count = sfmtRand.Nextuint() % 8;
+        for (int i = 0; i < count; i++)
+            loSeed = BitOperations.Crc32C(loSeed, tableULongs[(int)(sfmtRand.Nextuint() % 16)]);
+        uint hiSeed = BitOperations.Crc32C(sfmtRand.Nextuint(), sfmtRand.Nextuint());
+
+        // Step 5: Chacha
+        Chacha20Crypt(tableBytes.Span);
+
+        // Step 6: MurmurHash3 X64
+        ulong u64Seed = (ulong)hiSeed << 32 | loSeed;
+        Span<byte> hash = stackalloc byte[16];
+
+        // Step 7: New unknown hashing
+        UnkHash.Hash(tableBytes.Span, hash, u64Seed);
+        Span<ulong> hashLongs = MemoryMarshal.Cast<byte, ulong>(hash);
+
+        // Step 8: more crcing.. Game passes combined in full into the crc32 instruction, only the lower 32 will be used.
+        uint seed = BitOperations.Crc32C(BitOperations.Crc32C((uint)u64Seed, ~hashLongs[0]), hashLongs[1]);
+
+        // Step 9: Mt skip (Equivalent to calling Nextuint twice)
+        sfmtRand.Next();
+
+        // Step 10: Salsa (that will essentially decrypt)
+        Chacha20Crypt(tableBytes.Span);
+
+        // Step 11: Unk hash again
+        UnkHash.Hash(tableBytes.Span, hash, seed);
+
+        // Step 12: MT
+        seed = sfmtRand.Nextuint() ^ sfmtRand.Nextuint();
+
+        // Step 13: Scramble
+        uint seed2 = ScrambleGenSeed(MemoryMarshal.Cast<ulong, byte>(hashLongs));
+
+        // Step 14: xor both seeds & not them into final key
+        uint key = ~(seed ^ seed2);
         return key;
     }
 
@@ -1443,6 +1461,19 @@ public class CakeRegistryFile : IDisposable
                     k[i] = (byte)(nameSeed[j] ^ (nameSeed[j] + (i++ ^ 0x1C)));
             }
         }
+        else if (IsVersion(9, 3))
+        {
+            int seedIndex = 0;
+            int incDirection = 1;
+            for (byte i = 0; i < length; i++)
+            {
+                k[i] = (byte)(nameSeed[seedIndex] ^ ((byte)((byte)~nameSeed[seedIndex] + (byte)(i ^ 0xBC))));
+
+                seedIndex += incDirection;
+                if (seedIndex == nameSeed.Length - 1 || seedIndex == 0)
+                    incDirection = -incDirection; // Increment the other way around
+            }
+        }
 
         return k.AsMemory(0, length);
     }
@@ -1454,10 +1485,16 @@ public class CakeRegistryFile : IDisposable
             byte[] key = new byte[32];
             byte[] iv = new byte[12];
 
-            if (VersionMajor >= 9)
+            if (IsVersion(9, 3))
             {
-                Encoding.ASCII.GetBytes(ConstantKeyV9, key);
-                Encoding.ASCII.GetBytes(ConstantIVV9, iv.AsSpan(4));
+                Encoding.ASCII.GetBytes(ConstantKeyV9_3, key);
+                Encoding.ASCII.GetBytes(ConstantIVV9_3, iv.AsSpan(4));
+                ChaCha20.sigma = Encoding.ASCII.GetBytes("Tf!UM*18EWf]$X_&");
+            }
+            else if (IsVersion(9,1) || IsVersion(9, 2))
+            {
+                Encoding.ASCII.GetBytes(ConstantKeyV9_1, key);
+                Encoding.ASCII.GetBytes(ConstantIVV9_1, iv.AsSpan(4));
                 ChaCha20.sigma = Encoding.ASCII.GetBytes("Ym<q}it&('oU^}t_"); // yeah that was also changed for some reason
             }
             else
