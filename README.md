@@ -23,3 +23,5 @@ This repo is only provided for reference/documentation. No support will be provi
 ## License
 
 MIT License.
+
+Beyond licensing please credit if you're going to use any of work & research this took.
