@@ -314,28 +314,6 @@ public class CakeRegistryFile : IDisposable
 
         OnCakeEntriesLoaded();
 
-        if (_fileLookupTable.TryGetValue(0x1CEFDE432072B8AF, out CakeEntryLookup look))
-        {
-            var ent = _fileEntries[(int)look.EntryIndex];
-            string path = GetGamePathForEntry(ent);
-            ;
-        }
-
-        for (int i = 0; i < _fileEntries.Count; i++)
-        {
-            _fileEntries[i].FileName = _strings[_fileEntries[i].StringOffset];
-
-        }
-
-
-        string jizz = JsonSerializer.Serialize(_fileEntries.Where(e => e.CompressedBits == 0 && e.CompressedSize > 0x1000), new JsonSerializerOptions()
-        {
-            WriteIndented = true,
-        });
-        File.WriteAllText("test.json", jizz);
-
-        var test = _fileEntries.Where(e => e.CompressedBits != 0).MinBy(e => e.CompressedSize);
-
         _logger?.LogInformation("Cake initialized.");
     }
 

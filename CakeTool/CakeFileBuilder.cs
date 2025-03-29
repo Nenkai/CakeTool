@@ -152,7 +152,7 @@ public class CakeFileBuilder
 
         foreach (var fileSysPath in Directory.EnumerateFileSystemEntries(currentDir, "*"))
         {
-            string relativeSubEntryPath = Path.GetRelativePath(mainDir, fileSysPath);
+            string relativeSubEntryPath = Path.GetRelativePath(mainDir, fileSysPath).Replace('\\', '/');
 
             var info = new FileInfo(fileSysPath);
             if (info.Attributes.HasFlag(FileAttributes.Directory))
@@ -163,6 +163,12 @@ public class CakeFileBuilder
             }
             else
             {
+                if (relativeSubEntryPath.Equals("_textures.tdb"))
+                {
+                    _logger.LogWarning("Skipping _textures.tdb in folder as we're rebuilding it");
+                    continue;
+                }
+
                 RegisterFileForFolder(dirEntry, fileSysPath, relativeSubEntryPath);
             }
         }
@@ -196,7 +202,7 @@ public class CakeFileBuilder
         dirEntry.FileIndices.Add(cakeFileEntry.FileEntryIndex);
 
         ulong hash = FNV1A64.FNV64StringI(cakeFileEntry.RelativePath);
-        _fileLookup.Add(hash, new CakeEntryLookup()
+        _fileLookup.TryAdd(hash, new CakeEntryLookup()
         {
             NameHash = hash,
             EntryIndex = cakeFileEntry.FileEntryIndex,
